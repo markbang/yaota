@@ -1,0 +1,46 @@
+# yaota
+
+Expo Updates + Android APK distribution console for Cloudflare, built with Hono and the official Cloudflare Workers Vite plugin.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. The console calls the Hono API and falls back to seeded data while bindings are not configured.
+
+## Cloudflare setup
+
+Authenticate Wrangler before deploying. In a local terminal use `npx wrangler login`, or provide a deploy token with `CLOUDFLARE_API_TOKEN` in CI.
+
+1. Create a D1 database and R2 bucket.
+2. Add their ids/names to `wrangler.jsonc` by uncommenting the bindings.
+3. Initialize D1 with `npx wrangler d1 execute yaota --remote --file=schema.sql`.
+4. Set an admin token with `npx wrangler secret put YAOTA_ADMIN_TOKEN`.
+5. Deploy with `npm run deploy`.
+
+For a new account, the resource commands are:
+
+```bash
+npx wrangler d1 create yaota
+npx wrangler r2 bucket create yaota-assets
+```
+
+The current checkout can be fully verified locally with `npm test`, `npm run build`, and `npx wrangler deploy --dry-run`. A real Cloudflare URL is intentionally not claimed here because the available Wrangler session is expired and no API token is present.
+
+The Expo Updates endpoint is `https://<your-worker-domain>/api/updates`. It reads `expo-channel-name`, `expo-platform`, and `expo-runtime-version` headers and responds with Expo Updates protocol v1 (`application/expo+json`). APKs are served from `/apk/<file>.apk` through R2.
+
+For Expo apps, set `updates.url` to that endpoint and ensure the app runtime version matches the release runtime shown in the console. A release can reference a bundle already hosted on a CDN through `launchAssetUrl`, or assets can be uploaded to the release-scoped R2 route before promotion.
+
+## API surface
+
+- `GET /api/health`
+- `GET /api/releases`
+- `POST /api/releases` (admin)
+- `POST /api/releases/:id/promote` (admin)
+- `POST /api/releases/:id/rollback` (admin)
+- `GET /api/apks`
+- `POST /api/apks/presign` and `PUT /api/apks/upload/:key` (admin)
+- `GET /api/updates` or `GET /api/manifest` for Expo clients

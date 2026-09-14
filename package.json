@@ -1,0 +1,22 @@
+{
+  "name": "yaota-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "test": "node --test test/worker.test.js"
+  },
+  "dependencies": {
+    "hono": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.0.0",
+    "vite": "^6.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
