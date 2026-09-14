@@ -1,6 +1,14 @@
 import { Hono } from "hono";
+import { ota } from "./src/ota.ts";
+import type { Env, ReleaseRow, JsonObject } from "./src/types.ts";
 
-const seedReleases = [
+interface LegacyRelease {
+  id: string; version: string; channel: string; platform: string; runtimeVersion: string;
+  status: string; rollout: number; createdAt: string; note: string; launchAssetUrl: string | null; assets: unknown[];
+}
+interface ApkRow { key: string; version: string; size: string; arch: string; downloads: number; created_at: string; status: string }
+
+const seedReleases: LegacyRelease[] = [
   {
     id: "8c1f2f3a-9c16-4d8e-9f6d-0aa77d9d0e11",
     version: "2.4.0",
@@ -42,7 +50,7 @@ const seedReleases = [
   },
 ];
 
-const json = (body, status = 200, extra = {}) =>
+const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", ...extra },
@@ -52,13 +60,13 @@ const cors = {
   "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS",
   "access-control-allow-headers": "content-type,authorization",
 };
-const withCors = (response) => {
+const withCors = (response: Response) => {
   const headers = new Headers(response.headers);
   Object.entries(cors).forEach(([key, value]) => headers.set(key, value));
   return new Response(response.body, { status: response.status, headers });
 };
 
-function authorized(request, env) {
+function authorized(request: Request, env: Env) {
   // Seeded local mode is intentionally open; configured storage requires the admin secret.
   if (!env.YAOTA_ADMIN_TOKEN) return !env.DB && !env.ASSETS_R2;
   return (
@@ -66,17 +74,22 @@ function authorized(request, env) {
   );
 }
 
-async function listReleases(env) {
+async function listReleases(env: Env): Promise<LegacyRelease[]> {
   if (!env.DB) return seedReleases;
   const { results } = await env.DB.prepare(
     "SELECT * FROM releases ORDER BY created_at DESC",
-  ).all();
+  ).all<ReleaseRow>();
   return results.map(rowToRelease);
 }
 
-function rowToRelease(row) {
+function rowToRelease(row: ReleaseRow) {
   return {
     id: row.id,
+    appId: row.app_id,
+    branch: row.branch || row.channel,
+    revision: row.revision,
+    fingerprint: row.fingerprint,
+    manifest: row.manifest_json ? JSON.parse(row.manifest_json) : null,
     version: row.version,
     channel: row.channel,
     platform: row.platform,
@@ -90,8 +103,8 @@ function rowToRelease(row) {
   };
 }
 
-async function createRelease(env, payload) {
-  const release = {
+async function createRelease(env: Env, payload: JsonObject) {
+  const release: LegacyRelease = {
     id: crypto.randomUUID(),
     version: String(payload.version || "").trim(),
     channel: String(payload.channel || "preview"),
@@ -103,7 +116,7 @@ async function createRelease(env, payload) {
     rollout: 0,
     createdAt: new Date().toISOString(),
     note: String(payload.note || ""),
-    launchAssetUrl: payload.launchAssetUrl || null,
+    launchAssetUrl: typeof payload.launchAssetUrl === "string" ? payload.launchAssetUrl : null,
     assets: Array.isArray(payload.assets) ? payload.assets : [],
   };
   if (!release.version) throw new Error("version is required");
@@ -131,7 +144,7 @@ async function createRelease(env, payload) {
   return release;
 }
 
-async function updateRelease(env, id, status, rollout) {
+async function updateRelease(env: Env, id: string, status: string, rollout: number) {
   if (!env.DB) {
     const release = seedReleases.find((item) => item.id === id);
     if (!release) return null;
@@ -141,6 +154,7 @@ async function updateRelease(env, id, status, rollout) {
           item.id !== id &&
           item.channel === release.channel &&
           item.platform === release.platform &&
+          item.runtimeVersion === release.runtimeVersion &&
           item.status === "Live"
         ) {
           item.status = "Archived";
@@ -154,15 +168,15 @@ async function updateRelease(env, id, status, rollout) {
   }
   if (status === "Live") {
     const current = await env.DB.prepare(
-      "SELECT channel, platform FROM releases WHERE id = ?",
+      "SELECT app_id, channel, platform, runtime_version FROM releases WHERE id = ?",
     )
       .bind(id)
-      .first();
+      .first<ReleaseRow>();
     if (current) {
       await env.DB.prepare(
-        "UPDATE releases SET status = 'Archived', rollout = 0 WHERE channel = ? AND platform = ? AND status = 'Live' AND id != ?",
+        "UPDATE releases SET status = 'Archived', rollout = 0 WHERE channel = ? AND platform = ? AND app_id = ? AND runtime_version = ? AND status = 'Live' AND id != ?",
       )
-        .bind(current.channel, current.platform, id)
+        .bind(current.channel, current.platform, current.app_id, current.runtime_version, id)
         .run();
     }
   }
@@ -173,12 +187,12 @@ async function updateRelease(env, id, status, rollout) {
     .run();
   const row = await env.DB.prepare("SELECT * FROM releases WHERE id = ?")
     .bind(id)
-    .first();
+    .first<ReleaseRow>();
   return row ? rowToRelease(row) : null;
 }
 
-async function patchRelease(env, id, payload, origin) {
-  const launchAssetUrl = payload.launchAssetUrl || null;
+async function patchRelease(env: Env, id: string, payload: JsonObject, origin: string) {
+  const launchAssetUrl = typeof payload.launchAssetUrl === "string" ? payload.launchAssetUrl : null;
   const assets = Array.isArray(payload.assets) ? payload.assets : [];
   if (!env.DB) {
     const release = seedReleases.find((item) => item.id === id);
@@ -187,6 +201,8 @@ async function patchRelease(env, id, payload, origin) {
     if (Array.isArray(payload.assets)) release.assets = assets;
     return release;
   }
+  const existing = await env.DB.prepare("SELECT manifest_json,directive_json FROM releases WHERE id=?").bind(id).first();
+  if (existing?.manifest_json || existing?.directive_json) throw new Error("Published OTA manifests are immutable; publish a new update");
   await env.DB.prepare(
     "UPDATE releases SET launch_asset_url = COALESCE(?, launch_asset_url), assets_json = CASE WHEN ? THEN ? ELSE assets_json END WHERE id = ?",
   )
@@ -199,11 +215,11 @@ async function patchRelease(env, id, payload, origin) {
     .run();
   const row = await env.DB.prepare("SELECT * FROM releases WHERE id = ?")
     .bind(id)
-    .first();
+    .first<ReleaseRow>();
   return row ? rowToRelease(row) : null;
 }
 
-async function listApks(env) {
+async function listApks(env: Env) {
   if (!env.DB)
     return [
       {
@@ -227,7 +243,7 @@ async function listApks(env) {
     ];
   const { results } = await env.DB.prepare(
     "SELECT * FROM apks ORDER BY created_at DESC",
-  ).all();
+  ).all<ApkRow>();
   return results.map((row) => ({
     version: row.version,
     size: row.size,
@@ -239,7 +255,7 @@ async function listApks(env) {
   }));
 }
 
-async function expoManifest(request, env, url) {
+async function expoManifest(request: Request, env: Env, url: URL) {
   const channel =
     request.headers.get("expo-channel-name") ||
     url.searchParams.get("channel") ||
@@ -292,7 +308,7 @@ async function expoManifest(request, env, url) {
 }
 
 const worker = {
-  async fetch(request, env) {
+  async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS")
       return new Response(null, { status: 204, headers: cors });
@@ -413,10 +429,12 @@ const worker = {
         if (!object)
           return withCors(json({ error: "Update asset not found" }, 404));
         const headers = new Headers(cors);
-        object.writeHttpMetadata(headers);
+        for (const [key, value] of Object.entries(object.httpMetadata || {})) {
+          if (key === "contentType") headers.set("content-type", String(value));
+        }
         headers.set("etag", object.httpEtag);
         headers.set("cache-control", "public, max-age=31536000, immutable");
-        return new Response(object.body, { headers });
+        return new Response(object.body as unknown as ReadableStream, { headers });
       }
       const updateUpload = url.pathname.match(
         /^\/api\/updates\/assets\/([^/]+)\/upload\/(.+)$/,
@@ -429,7 +447,7 @@ const worker = {
             json({ error: "R2 binding ASSETS_R2 is required" }, 501),
           );
         const key = `updates/${updateUpload[1]}/${decodeURIComponent(updateUpload[2])}`;
-        await env.ASSETS_R2.put(key, request.body, {
+        await env.ASSETS_R2.put(key, await request.arrayBuffer(), {
           httpMetadata: {
             contentType:
               request.headers.get("content-type") || "application/octet-stream",
@@ -445,7 +463,7 @@ const worker = {
           return withCors(
             json({ error: "R2 binding ASSETS_R2 is required" }, 501),
           );
-        await env.ASSETS_R2.put(decodeURIComponent(upload[1]), request.body, {
+        await env.ASSETS_R2.put(decodeURIComponent(upload[1]), await request.arrayBuffer(), {
           httpMetadata: {
             contentType: "application/vnd.android.package-archive",
           },
@@ -462,23 +480,24 @@ const worker = {
         );
         if (!object) return withCors(json({ error: "APK not found" }, 404));
         const headers = new Headers(cors);
-        object.writeHttpMetadata(headers);
+        headers.set("content-type", object.httpMetadata?.contentType || "application/vnd.android.package-archive");
         headers.set("etag", object.httpEtag);
         headers.set("content-disposition", "attachment");
-        return new Response(object.body, { headers });
+        return new Response(object.body as unknown as ReadableStream, { headers });
       }
       return env.ASSETS
         ? env.ASSETS.fetch(request)
         : new Response("Not found", { status: 404 });
     } catch (error) {
-      return withCors(json({ error: error.message || "Request failed" }, 400));
+      return withCors(json({ error: error instanceof Error ? error.message : "Request failed" }, 400));
     }
   },
 };
 
 // Hono is the routing layer used by the Cloudflare Workers + Vite integration.
 // Keeping the handler boundary explicit also makes it easy to test with app.request().
-const app = new Hono();
+const app = new Hono<{ Bindings: Env }>();
+app.route("/", ota);
 app.all("*", (c) => worker.fetch(c.req.raw, c.env || {}));
 
 export default app;

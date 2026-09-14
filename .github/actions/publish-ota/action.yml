@@ -1,0 +1,59 @@
+name: Publish Yaota update
+description: Upload missing Expo assets, verify binary deltas and activate the update
+inputs:
+  server:
+    required: true
+    description: Yaota HTTPS origin
+  api-key:
+    required: true
+    description: Publishing secret
+  export-dir:
+    required: true
+    description: Existing Expo export directory
+  config:
+    required: true
+    description: Expo public config JSON file
+  platform:
+    required: true
+    description: android or ios
+  runtime:
+    required: true
+    description: Installed native runtime
+  fingerprint:
+    required: false
+    description: Native source fingerprint
+  channel:
+    default: production
+    description: Destination channel
+  rollout:
+    default: '100'
+    description: Initial rollout percentage
+  delta-bases:
+    default: '3'
+    description: Maximum compatible base bundles
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+    - shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: npm ci
+    - shell: bash
+      env:
+        OTA_SERVER: ${{ inputs.server }}
+        OTA_API_KEY: ${{ inputs.api-key }}
+        OTA_EXPORT: ${{ inputs.export-dir }}
+        OTA_CONFIG: ${{ inputs.config }}
+        OTA_PLATFORM: ${{ inputs.platform }}
+        OTA_RUNTIME: ${{ inputs.runtime }}
+        OTA_FINGERPRINT: ${{ inputs.fingerprint }}
+        OTA_CHANNEL: ${{ inputs.channel }}
+        OTA_ROLLOUT: ${{ inputs.rollout }}
+        OTA_BASES: ${{ inputs.delta-bases }}
+      run: |
+        node "${{ github.action_path }}/../../../scripts/publish.ts" \
+          --export-dir "$OTA_EXPORT" --config "$OTA_CONFIG" --platform "$OTA_PLATFORM" \
+          --runtime "$OTA_RUNTIME" --fingerprint "$OTA_FINGERPRINT" --channel "$OTA_CHANNEL" \
+          --rollout "$OTA_ROLLOUT" --delta-bases "$OTA_BASES"

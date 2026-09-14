@@ -56,7 +56,7 @@ select:focus-visible {
 .brand {
   font-size: 22px;
   font-weight: 700;
-  letter-spacing: -1px;
+  letter-spacing: 0;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -386,7 +386,7 @@ small {
 }
 .page-heading h1 {
   font-size: 36px;
-  letter-spacing: -1.5px;
+  letter-spacing: 0;
   margin: 9px 0 7px;
 }
 .page-heading p,
@@ -428,7 +428,7 @@ small {
 .metric strong {
   font-size: 28px;
   font-weight: 500;
-  letter-spacing: -1px;
+  letter-spacing: 0;
 }
 .unit {
   font-size: 15px;
@@ -780,9 +780,32 @@ dialog {
   background: var(--panel);
   color: var(--text);
   padding: 0;
-  width: min(460px, calc(100% - 32px));
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   box-shadow: 0 24px 80px #0008;
 }
+svg.lucide { width: 18px; height: 18px; flex: 0 0 18px; }
+.icon-btn { width: 36px; height: 36px; display: inline-grid; place-items: center; }
+.workspace strong { display: block; margin-top: 10px; overflow-wrap: anywhere; }
+.page-heading h1 { font-size: 28px; }
+.runtime { display: block; max-width: 180px; white-space: normal; overflow-wrap: anywhere; }
+.table-wrap td:first-child { max-width: 290px; white-space: normal; overflow-wrap: anywhere; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.error, .form-error { color: var(--red); overflow-wrap: anywhere; }
+.error { border-left: 2px solid var(--red); padding: 12px; margin-bottom: 20px; }
+.form-error { margin: 16px 24px 0; }
+.dialog-detail { padding: 18px 24px 0; overflow-wrap: anywhere; }
+.check { display: flex; gap: 10px; align-items: center; }
+.check input { width: 18px; margin: 0; }
+button:disabled { opacity: .5; cursor: wait; }
+.section-head select { width: 150px; }
+progress { width: 65px; height: 6px; accent-color: var(--lime); }
+.activity-row { flex-wrap: wrap; }
+.activity-row time { color: var(--muted); min-width: 130px; }
+.activity-row code { overflow-wrap: anywhere; white-space: normal; }
+.toast { max-width: calc(100vw - 48px); overflow-wrap: anywhere; z-index: 10; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
 dialog::backdrop {
   background: #0009;
 }

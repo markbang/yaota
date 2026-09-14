@@ -9,13 +9,25 @@
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
-    "test": "node --test test/worker.test.js"
+    "test": "node --test test/*.test.js",
+    "test:workerd": "npm run build && node scripts/smoke-ota.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "hono": "^4.6.5"
+    "bsdiff-wasm": "^0.1.4",
+    "hono": "^4.6.5",
+    "lucide": "^1.45.0",
+    "mrmime": "^2.0.1",
+    "negotiator": "^1.1.0",
+    "structured-headers": "^2.1.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.0.0",
+    "@cloudflare/workers-types": "^5.20260914.1",
+    "@types/negotiator": "^0.6.5",
+    "@types/node": "^26.5.1",
+    "miniflare": "^5.20260911.0-alpha",
+    "typescript": "^7.0.2",
     "vite": "^6.0.0",
     "wrangler": "^4.0.0"
   }

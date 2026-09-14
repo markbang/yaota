@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import app from "../worker.js";
+import app from "../worker.ts";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 
