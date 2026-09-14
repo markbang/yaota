@@ -310,8 +310,12 @@ async function expoManifest(request: Request, env: Env, url: URL) {
 const worker = {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS")
+      if (request.method === "OPTIONS")
       return new Response(null, { status: 204, headers: cors });
+      if (url.pathname === "/admin" || url.pathname === "/admin/") {
+        if (!authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
+        return env.ASSETS ? env.ASSETS.fetch(new Request(new URL("/", request.url), request)) : json({ error: "Assets are not configured" }, 503);
+      }
     try {
       if (url.pathname === "/api/health")
         return withCors(

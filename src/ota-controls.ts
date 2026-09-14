@@ -65,7 +65,8 @@ controls.use("/api/ota/*", async (c, next) => {
   return next();
 });
 controls.get("/api/ota/state", async c => {
-  const app = c.env.OTA_APP_ID;
+  const app = c.req.query("app_id") || c.env.OTA_APP_ID;
+  if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(app)) fail(400, "Invalid app_id");
   const releases = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND (manifest_json IS NOT NULL OR directive_json IS NOT NULL) ORDER BY created_at DESC").bind(app).all<ReleaseRow>();
   const channels = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? ORDER BY name").bind(app).all<ChannelRow>();
   const failures = await c.env.DB.prepare("SELECT release_id,COUNT(*) AS clients,MAX(last_seen) AS last_seen FROM ota_failures WHERE app_id=? GROUP BY release_id ORDER BY last_seen DESC").bind(app).all();
