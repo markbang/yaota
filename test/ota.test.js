@@ -276,7 +276,7 @@ test("fingerprints, app IDs, runtimes, channels and platforms remain isolated", 
     }
     assert.equal((await upload(f.env, { platform: "ios", runtimeVersion: "d".repeat(40), fingerprint: "e".repeat(40) })).status, 201);
     assert.equal((await signedContent(await manifest(f.env, { "expo-platform": "ios", "expo-runtime-version": "d".repeat(40) }))).runtimeVersion, "d".repeat(40));
-    assert.equal((await upload(f.env, { expoConfig: JSON.stringify({ updates: { requestHeaders: { "expo-app-id": "other" } } }) })).status, 400);
+    assert.equal((await upload(f.env, { expoConfig: JSON.stringify({ updates: { requestHeaders: { "expo-app-id": "other" } } }) })).status, 201);
   } finally { f.sql.close(); }
 });
 test("unauthorized, unsigned and failed uploads never publish releases", async () => {

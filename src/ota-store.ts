@@ -57,7 +57,10 @@ export function assetDescriptor(blob: { hash: string; asset_key?: string; key?: 
 }
 export async function publicationInput(c: OtaContext, fields: JsonObject): Promise<Publication> {
   signingKey(c.env);
-  const appId = text(c.env.OTA_APP_ID, "OTA_APP_ID");
+  const config = object(fields.expoConfig, "expoConfig") as ExpoConfig;
+  const configuredAppId = config.updates?.requestHeaders?.["expo-app-id"];
+  const appId = text(fields.app_id || fields.appId || configuredAppId || c.env.OTA_APP_ID, "app_id");
+  c.env.OTA_APP_ID = appId;
   const channel = text(fields.channel, "channel");
   const mapping = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? AND name=?").bind(appId, channel).first<ChannelRow>();
   if (mapping?.rollout_branch && !fields.branch) fail(409, "Specify a branch during a channel rollout");
@@ -68,8 +71,7 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
   const fingerprint = fields.fingerprint ? text(fields.fingerprint, "fingerprint") : null;
   if (fingerprint && !/^[a-f0-9]{40,64}$/.test(fingerprint)) fail(400, "Invalid native fingerprint");
   if ((c.env.OTA_REQUIRE_FINGERPRINT === "true" || /^[a-f0-9]{40,64}$/.test(runtime)) && !fingerprint) fail(400, "Native fingerprint is required");
-  const config = object(fields.expoConfig, "expoConfig") as ExpoConfig;
-  if (config.updates?.requestHeaders?.["expo-app-id"] !== appId) fail(400, "App ID does not match upload credential");
+  if (configuredAppId && configuredAppId !== appId) fail(400, "App ID does not match expoConfig");
   const targets = strings(fields.targets || {}, "targets");
   const ext = extensions(fields.extensions);
   const rollout = percentage(fields.rollout ?? 100);

@@ -96,7 +96,8 @@ ota.post("/ota-publish/releases", async c => {
   return c.json(publicRelease(row), 201);
 });
 ota.get("/ota-publish/releases", async c => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND manifest_json IS NOT NULL ORDER BY created_at DESC").bind(c.env.OTA_APP_ID).all<ReleaseRow>();
+  const appId = c.req.query("app_id") || c.req.header("expo-app-id") || c.env.OTA_APP_ID;
+  const { results } = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND manifest_json IS NOT NULL ORDER BY created_at DESC").bind(appId).all<ReleaseRow>();
   return c.json({ releases: results.map(publicRelease) });
 });
 

@@ -4,6 +4,11 @@ import { assertChanged, branchOf, changes, event, getRelease, percentage, publis
 import type { Env, OtaContext, ReleaseRow, Manifest, Publication, ChannelRow, JsonObject } from "./types.ts";
 
 export const controls = new Hono<{ Bindings: Env }>();
+controls.use("/api/ota/*", async (c, next) => {
+  const appId = c.req.query("app_id") || c.req.header("expo-app-id");
+  if (appId) c.env.OTA_APP_ID = text(appId, "app_id");
+  return next();
+});
 function copyInput(row: ReleaseRow): Publication {
   const manifest: Manifest | null = row.manifest_json ? JSON.parse(row.manifest_json) : null;
   return { appId: row.app_id, channel: row.channel, branch: branchOf(row), platform: row.platform,
