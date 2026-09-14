@@ -78,6 +78,17 @@ controls.get("/api/ota/state", async c => {
   const events = await c.env.DB.prepare("SELECT action,subject,created_at FROM ota_events WHERE app_id=? ORDER BY id DESC LIMIT 100").bind(app).all();
   return c.json({ appId: app, releases: releases.results.map(publicRelease), channels: channels.results.map(row => ({ ...row, headers: JSON.parse(row.headers_json) })), failures: failures.results, events: events.results });
 });
+controls.get("/api/ota/apps", async c => {
+  const { results } = await c.env.DB.prepare("SELECT app_id,created_at FROM ota_apps ORDER BY app_id").all();
+  return c.json({ apps: results });
+});
+controls.post("/api/ota/apps", async c => {
+  const data = await body(c);
+  const appId = text(data.app_id, "app_id");
+  if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(appId)) fail(400, "Invalid app_id");
+  await c.env.DB.prepare("INSERT OR IGNORE INTO ota_apps(app_id) VALUES(?)").bind(appId).run();
+  return c.json({ appId }, 201);
+});
 controls.post("/api/ota/releases/:id/:action", async c => c.json({ release: publicRelease(await releaseAction(c, c.req.param("id"), c.req.param("action"), await body(c))) }));
 
 // Existing console URLs must execute native-compatible rollback for signed releases too.

@@ -61,6 +61,7 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
   const configuredAppId = config.updates?.requestHeaders?.["expo-app-id"];
   const appId = text(fields.app_id || fields.appId || configuredAppId || c.env.OTA_APP_ID, "app_id");
   c.env.OTA_APP_ID = appId;
+  await c.env.DB.prepare("INSERT OR IGNORE INTO ota_apps(app_id) VALUES(?)").bind(appId).run();
   const channel = text(fields.channel, "channel");
   const mapping = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? AND name=?").bind(appId, channel).first<ChannelRow>();
   if (mapping?.rollout_branch && !fields.branch) fail(409, "Specify a branch during a channel rollout");

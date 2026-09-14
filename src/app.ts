@@ -9,7 +9,9 @@ interface State {
   failures: { release_id: string; clients: number; last_seen: string }[];
   events: { action: string; subject: string; created_at: string }[];
 }
+interface AppEntry { app_id: string; created_at: string }
 let state: State = { appId: "yaota", releases: [], channels: [], failures: [], events: [] };
+let apps: AppEntry[] = [];
 let error = "";
 let filter = "all";
 let selectedApp = localStorage.getItem("yaota_app_id") || "cohub-mobile";
@@ -39,7 +41,7 @@ function toast(message: string) {
   setTimeout(() => node.classList.remove("show"), 4500);
 }
 async function refresh() {
-  try { state = await api<State>(`/api/ota/state?app_id=${encodeURIComponent(selectedApp)}`); error = ""; }
+  try { ({ apps } = await api<{ apps: AppEntry[] }>("/api/ota/apps")); if (!apps.some(a => a.app_id === selectedApp)) selectedApp = apps[0]?.app_id || selectedApp; state = await api<State>(`/api/ota/state?app_id=${encodeURIComponent(selectedApp)}`); error = ""; }
   catch (cause) { error = cause instanceof Error ? cause.message : "Connection failed"; }
   render();
   if (error === "Unauthorized" && !sessionStorage.getItem("yaota_admin_prompted")) {
@@ -54,7 +56,7 @@ function render() {
     <div class="brand"><span class="brand-mark">Y</span>yaota</div><div class="workspace"><span class="eyebrow">APPLICATION</span><strong>${escape(state.appId)}</strong></div>
     <nav class="nav"><a class="nav-item active" href="#releases">${icon("layers")}Releases</a><a class="nav-item" href="#channels">${icon("git-branch")}Channels</a><a class="nav-item" href="#failures">${icon("activity")}Failures</a><a class="nav-item" href="#activity">${icon("activity")}Activity</a></nav>
     </aside><main class="main"><header class="topbar"><strong>yaota / OTA</strong><div class="top-actions"><button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh">${icon("refresh-cw")}</button><button class="icon-btn" id="token" title="Admin credentials" aria-label="Admin credentials">${icon("key-round")}</button></div></header>
-    <div class="content"><section class="page-heading"><div><span class="kicker">${escape(state.appId)}</span><h1>Release management</h1><label class="app-switcher">App ID <input id="app-id" value="${escape(selectedApp)}" spellcheck="false"><button class="secondary" id="switch-app" type="button">Switch</button></label></div><button class="primary" id="publish">${icon("upload")}Publish update</button></section>
+    <div class="content"><section class="page-heading"><div><span class="kicker">APPLICATION</span><h1>Release management</h1><label class="app-switcher">App <select id="app-id">${apps.map(a => `<option value="${escape(a.app_id)}" ${a.app_id === selectedApp ? "selected" : ""}>${escape(a.app_id)}</option>`).join("")}</select><button class="secondary" id="new-app" type="button">${icon("plus")}New app</button></label></div><button class="primary" id="publish">${icon("upload")}Publish update</button></section>
     ${error ? `<div class="error" role="alert">${escape(error)}</div>` : ""}
     <section class="metrics">${[["Active updates", state.releases.filter(r => r.status === "Live" && r.manifest).length], ["Staged", state.releases.filter(r => r.status === "Staged").length], ["Active rollouts", state.releases.filter(r => r.status === "Live" && r.rollout < 100).length + state.channels.filter(c => c.rollout_branch).length], ["Reported client/update failures", state.failures.reduce((n, f) => n + f.clients, 0)]].map(([label, value]) => `<div class="metric"><span class="metric-label">${label}</span><strong>${value}</strong></div>`).join("")}</section>
     <section class="section" id="releases"><div class="section-head"><h2>Updates</h2><select id="status-filter" aria-label="Release status">${["all", "Live", "Staged", "Archived", "Embedded"].map(s => `<option ${s === filter ? "selected" : ""}>${s}</option>`).join("")}</select></div><div class="table-wrap"><table><thead><tr><th>VERSION / UPDATE</th><th>BRANCH / PLATFORM</th><th>RUNTIME</th><th>ROLLOUT</th><th>STATUS</th><th>CREATED</th><th></th></tr></thead><tbody>${releases.map(r => `<tr><td><strong>${escape(r.directive ? "Embedded rollback" : r.version || "Update")}</strong><small>${escape(r.id.slice(0, 8))} / ${escape(r.note)}</small></td><td>${escape(r.branch)}<small>${escape(r.platform)}</small></td><td><code class="runtime" title="${escape(r.runtimeVersion)}">${escape(r.runtimeVersion)}</code></td><td><div class="coverage"><progress value="${r.rollout}" max="100"></progress>${r.rollout}%</div></td><td><span class="status ${escape(r.status.toLowerCase())}">${escape(r.status)}</span></td><td>${date(r.createdAt)}</td><td><button class="icon-btn" data-release="${escape(r.id)}" title="Manage update" aria-label="Manage ${escape(r.id.slice(0, 8))}">${icon("settings-2")}</button></td></tr>`).join("") || empty(7, "No updates")}</tbody></table></div></section>
@@ -67,7 +69,8 @@ function render() {
   element("#token").onclick = credentials;
   element<HTMLSelectElement>("#status-filter").onchange = e => { filter = (e.target as HTMLSelectElement).value; render(); };
   element("#publish").onclick = publishDialog;
-  element("#switch-app").onclick = () => { selectedApp = element<HTMLInputElement>("#app-id").value.trim(); localStorage.setItem("yaota_app_id", selectedApp); void refresh(); };
+  element<HTMLSelectElement>("#app-id").onchange = e => { selectedApp = (e.target as HTMLSelectElement).value; localStorage.setItem("yaota_app_id", selectedApp); void refresh(); };
+  element("#new-app").onclick = () => dialog("Create application", field("app_id", "App ID"), async form => { const appId = String(new FormData(form).get("app_id") || "").trim(); await api("/api/ota/apps", { method: "POST", body: JSON.stringify({ app_id: appId }) }); selectedApp = appId; localStorage.setItem("yaota_app_id", appId); });
   element("#new-channel").onclick = () => channelDialog();
   document.querySelectorAll<HTMLButtonElement>("[data-release]").forEach(button => button.onclick = () => releaseDialog(state.releases.find(r => r.id === button.dataset.release)!));
   document.querySelectorAll<HTMLButtonElement>("[data-channel]").forEach(button => button.onclick = () => channelDialog(state.channels.find(c => c.name === button.dataset.channel)));
