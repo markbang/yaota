@@ -41,6 +41,10 @@ async function refresh() {
   try { state = await api<State>("/api/ota/state"); error = ""; }
   catch (cause) { error = cause instanceof Error ? cause.message : "Connection failed"; }
   render();
+  if (error === "Unauthorized" && !sessionStorage.getItem("yaota_admin_prompted")) {
+    sessionStorage.setItem("yaota_admin_prompted", "1");
+    credentials();
+  }
 }
 const empty = (columns: number, message: string) => `<tr><td colspan="${columns}" class="empty">${escape(message)}</td></tr>`;
 function render() {
@@ -84,6 +88,7 @@ const field = (name: string, label: string, value = "", type = "text") => `<labe
 function credentials() {
   dialog("Admin credentials", field("token", "Admin token", "", "password"), async form => {
     sessionStorage.setItem("yaota_admin_token", String(new FormData(form).get("token") || "").trim());
+    sessionStorage.removeItem("yaota_admin_prompted");
   });
 }
 function releaseDialog(release: Release) {

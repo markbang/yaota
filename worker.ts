@@ -313,7 +313,6 @@ const worker = {
       if (request.method === "OPTIONS")
       return new Response(null, { status: 204, headers: cors });
       if (url.pathname === "/admin" || url.pathname === "/admin/") {
-        if (!authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
         return env.ASSETS ? env.ASSETS.fetch(new Request(new URL("/", request.url), request)) : json({ error: "Assets are not configured" }, 503);
       }
       if (url.pathname === "/") return withCors(json({ error: "Not found" }, 404));
