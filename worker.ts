@@ -316,6 +316,7 @@ const worker = {
         if (!authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
         return env.ASSETS ? env.ASSETS.fetch(new Request(new URL("/", request.url), request)) : json({ error: "Assets are not configured" }, 503);
       }
+      if (url.pathname === "/") return withCors(json({ error: "Not found" }, 404));
     try {
       if (url.pathname === "/api/health")
         return withCors(

@@ -7,7 +7,8 @@
   "vars": { "OTA_APP_ID": "cohub-mobile" },
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true
