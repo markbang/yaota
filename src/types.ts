@@ -7,13 +7,13 @@ export interface Env {
   DB: D1Database;
   ASSETS_R2: R2Bucket;
   ASSETS?: { fetch(request: Request): Promise<Response> };
-  OTA_APP_ID: string;
   OTA_API_KEY?: string;
   YAOTA_ADMIN_TOKEN?: string;
   OTA_REQUIRE_FINGERPRINT?: string;
   CODE_SIGNING_PRIVATE_KEY?: string;
   CODE_SIGNING_KEY_ID?: string;
   CODE_SIGNING_KEYS?: string;
+  CODE_SIGNING_APPS?: string;
   CODE_SIGNING_CERTIFICATE_CHAIN?: string;
 }
 export type OtaContext = Context<{ Bindings: Env }>;

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { ota } from "./src/ota.ts";
 import type { Env, ReleaseRow, JsonObject } from "./src/types.ts";
+import { appId, requireApp } from "./src/ota-apps.ts";
 
 interface LegacyRelease {
   id: string; version: string; channel: string; platform: string; runtimeVersion: string;
@@ -74,12 +75,12 @@ function authorized(request: Request, env: Env) {
   );
 }
 
-async function listReleases(env: Env): Promise<LegacyRelease[]> {
+async function listReleases(env: Env, id?: string, unsignedOnly = false): Promise<LegacyRelease[]> {
   if (!env.DB) return seedReleases;
   const { results } = await env.DB.prepare(
-    "SELECT * FROM releases ORDER BY created_at DESC",
-  ).all<ReleaseRow>();
-  return results.map(rowToRelease);
+    "SELECT * FROM releases WHERE app_id=? ORDER BY created_at DESC",
+  ).bind(appId(id)).all<ReleaseRow>();
+  return results.filter(row => !unsignedOnly || (!row.manifest_json && !row.directive_json)).map(rowToRelease);
 }
 
 function rowToRelease(row: ReleaseRow) {
@@ -124,8 +125,10 @@ async function createRelease(env: Env, payload: JsonObject) {
     seedReleases.unshift(release);
     return release;
   }
+  const application = appId(payload.app_id ?? payload.appId);
+  await requireApp(env, application);
   await env.DB.prepare(
-    "INSERT INTO releases (id,version,channel,platform,runtime_version,status,rollout,created_at,note,launch_asset_url,assets_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO releases (id,version,channel,platform,runtime_version,status,rollout,created_at,note,launch_asset_url,assets_json,app_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   )
     .bind(
       release.id,
@@ -139,6 +142,7 @@ async function createRelease(env: Env, payload: JsonObject) {
       release.note,
       release.launchAssetUrl,
       JSON.stringify(release.assets),
+      application,
     )
     .run();
   return release;
@@ -174,7 +178,7 @@ async function updateRelease(env: Env, id: string, status: string, rollout: numb
       .first<ReleaseRow>();
     if (current) {
       await env.DB.prepare(
-        "UPDATE releases SET status = 'Archived', rollout = 0 WHERE channel = ? AND platform = ? AND app_id = ? AND runtime_version = ? AND status = 'Live' AND id != ?",
+        "UPDATE releases SET status = 'Archived', rollout = 0 WHERE channel = ? AND platform = ? AND app_id = ? AND runtime_version = ? AND status = 'Live' AND id != ? AND manifest_json IS NULL AND directive_json IS NULL",
       )
         .bind(current.channel, current.platform, current.app_id, current.runtime_version, id)
         .run();
@@ -268,7 +272,7 @@ async function expoManifest(request: Request, env: Env, url: URL) {
     request.headers.get("expo-runtime-version") ||
     url.searchParams.get("runtimeVersion") ||
     "54.0.0";
-  const releases = await listReleases(env);
+  const releases = await listReleases(env, request.headers.get("expo-app-id") || url.searchParams.get("app_id") || undefined, true);
   const release = releases.find(
     (item) =>
       item.channel === channel &&
@@ -310,12 +314,12 @@ async function expoManifest(request: Request, env: Env, url: URL) {
 const worker = {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
-      if (request.method === "OPTIONS")
+    if (request.method === "OPTIONS")
       return new Response(null, { status: 204, headers: cors });
-      if (url.pathname === "/admin" || url.pathname === "/admin/") {
+    if ((url.pathname === "/admin" || url.pathname === "/admin/") && ["GET", "HEAD"].includes(request.method)) {
         return env.ASSETS ? env.ASSETS.fetch(new Request(new URL("/", request.url), request)) : json({ error: "Assets are not configured" }, 503);
-      }
-      if (url.pathname === "/") return withCors(json({ error: "Not found" }, 404));
+    }
+    if (["/", "/index.html"].includes(url.pathname)) return withCors(json({ error: "Not found" }, 404));
     try {
       if (url.pathname === "/api/health")
         return withCors(
@@ -327,8 +331,10 @@ const worker = {
         );
       if (url.pathname === "/api/updates" || url.pathname === "/api/manifest")
         return withCors(await expoManifest(request, env, url));
-      if (url.pathname === "/api/releases" && request.method === "GET")
-        return withCors(json({ releases: await listReleases(env) }));
+      if (url.pathname === "/api/releases" && request.method === "GET") {
+        if (!authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
+        return withCors(json({ releases: await listReleases(env, request.headers.get("expo-app-id") || url.searchParams.get("app_id") || undefined) }, 200, { "cache-control": "private, no-store" }));
+      }
       if (url.pathname === "/api/releases" && request.method === "POST") {
         if (!authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));

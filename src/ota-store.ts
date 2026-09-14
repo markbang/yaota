@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "mrmime";
 import { fail, text, object, strings, signingKey } from "./ota-protocol.ts";
+import { requestAppId, requireApp } from "./ota-apps.ts";
 import type { OtaContext, Env, ReleaseRow, Publication, Asset, PublishOptions, Extensions, JsonObject, ExpoConfig, ChannelRow, Manifest, StringMap } from "./types.ts";
 
 export const HASH = /^[A-Za-z0-9_-]{43}$/;
@@ -8,8 +9,8 @@ export const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{1
 export const changes = (result: { meta?: { changes?: number }; changes?: number | bigint } | undefined) => Number(result?.meta?.changes ?? result?.changes ?? 0);
 export const branchOf = (row: Pick<ReleaseRow, "branch" | "channel">) => row.branch || row.channel;
 export const assertChanged = (env: Env) => [env.DB.prepare("INSERT INTO ota_assertions(ok) VALUES(changes())"), env.DB.prepare("DELETE FROM ota_assertions")];
-export async function getRelease(env: Env, id: string): Promise<ReleaseRow> {
-  const row = await env.DB.prepare("SELECT * FROM releases WHERE id=? AND app_id=? AND (manifest_json IS NOT NULL OR directive_json IS NOT NULL)").bind(id, env.OTA_APP_ID).first<ReleaseRow>();
+export async function getRelease(env: Env, id: string, appId: string): Promise<ReleaseRow> {
+  const row = await env.DB.prepare("SELECT * FROM releases WHERE id=? AND app_id=? AND (manifest_json IS NOT NULL OR directive_json IS NOT NULL)").bind(id, appId).first<ReleaseRow>();
   if (!row) fail(404, "OTA release not found");
   return row;
 }
@@ -21,8 +22,8 @@ export function publicRelease(row: ReleaseRow) {
     extensions: JSON.parse(row.extensions_json) as Extensions,
     manifest: row.manifest_json ? JSON.parse(row.manifest_json) as Manifest : null };
 }
-export const event = (env: Env, action: string, subject: string) => env.DB.prepare("INSERT INTO ota_events(app_id,action,subject,created_at) VALUES(?,?,?,?)")
-  .bind(env.OTA_APP_ID, action, subject, new Date().toISOString());
+export const event = (env: Env, appId: string, action: string, subject: string) => env.DB.prepare("INSERT INTO ota_events(app_id,action,subject,created_at) VALUES(?,?,?,?)")
+  .bind(appId, action, subject, new Date().toISOString());
 export function percentage(value: unknown) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0 || n > 100) fail(400, "Percentage must be an integer from 0 to 100");
@@ -56,12 +57,11 @@ export function assetDescriptor(blob: { hash: string; asset_key?: string; key?: 
     ...(!bundle && extension ? { fileExtension: extension } : {}) };
 }
 export async function publicationInput(c: OtaContext, fields: JsonObject): Promise<Publication> {
-  signingKey(c.env);
   const config = object(fields.expoConfig, "expoConfig") as ExpoConfig;
   const configuredAppId = config.updates?.requestHeaders?.["expo-app-id"];
-  const appId = text(fields.app_id || fields.appId || configuredAppId || c.env.OTA_APP_ID, "app_id");
-  c.env.OTA_APP_ID = appId;
-  await c.env.DB.prepare("INSERT OR IGNORE INTO ota_apps(app_id) VALUES(?)").bind(appId).run();
+  const appId = requestAppId(c, fields.app_id, fields.appId, configuredAppId);
+  await requireApp(c.env, appId);
+  signingKey(c.env, new Map(), appId);
   const channel = text(fields.channel, "channel");
   const mapping = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? AND name=?").bind(appId, channel).first<ChannelRow>();
   if (mapping?.rollout_branch && !fields.branch) fail(409, "Specify a branch during a channel rollout");
@@ -72,7 +72,6 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
   const fingerprint = fields.fingerprint ? text(fields.fingerprint, "fingerprint") : null;
   if (fingerprint && !/^[a-f0-9]{40,64}$/.test(fingerprint)) fail(400, "Invalid native fingerprint");
   if ((c.env.OTA_REQUIRE_FINGERPRINT === "true" || /^[a-f0-9]{40,64}$/.test(runtime)) && !fingerprint) fail(400, "Native fingerprint is required");
-  if (configuredAppId && configuredAppId !== appId) fail(400, "App ID does not match expoConfig");
   const targets = strings(fields.targets || {}, "targets");
   const ext = extensions(fields.extensions);
   const rollout = percentage(fields.rollout ?? 100);
@@ -85,6 +84,8 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
 
 export async function publish(c: OtaContext, input: Publication, launchAsset: Asset | null, assets: Asset[], options: PublishOptions = {}) {
   const { env } = c;
+  await requireApp(env, input.appId);
+  signingKey(env, new Map(), input.appId);
   const id = input.id || crypto.randomUUID();
   const origin = new URL(c.req.url).origin;
   const withUrl = (asset: Asset) => ({ ...asset, url: `${origin}/ota-assets/${id}/${asset.hash}` });
@@ -109,7 +110,7 @@ export async function publish(c: OtaContext, input: Publication, launchAsset: As
   statements.push(insert);
   const index = statements.length - 1;
   statements.push(env.DB.prepare("UPDATE releases SET manifest_json=CASE WHEN manifest_json IS NOT NULL THEN json_set(manifest_json,'$.createdAt',created_at) ELSE NULL END, directive_json=CASE WHEN directive_json IS NOT NULL THEN json_set(directive_json,'$.parameters.commitTime',created_at) ELSE NULL END WHERE id=?").bind(id));
-  statements.push(event(env, options.action || "publish", id));
+  statements.push(event(env, input.appId, options.action || "publish", id));
   try {
     const results = await env.DB.batch(statements);
     if (!changes(results[index])) fail(409, "Fingerprint mismatch");
@@ -119,5 +120,5 @@ export async function publish(c: OtaContext, input: Publication, launchAsset: As
     if (/active rollout|UNIQUE constraint|CHECK constraint/.test(error.message)) fail(409, "Publication conflict: end the rollout or refresh before retrying");
     throw error;
   }
-  return getRelease(env, id);
+  return getRelease(env, id, input.appId);
 }

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS releases (
   note TEXT NOT NULL DEFAULT '',
   launch_asset_url TEXT,
   assets_json TEXT NOT NULL DEFAULT '[]',
-  app_id TEXT NOT NULL DEFAULT 'cohub-mobile',
+  app_id TEXT NOT NULL,
   fingerprint TEXT,
   manifest_json TEXT,
   branch TEXT NOT NULL DEFAULT '',
@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE TABLE IF NOT EXISTS ota_apps (
   app_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-INSERT OR IGNORE INTO ota_apps(app_id) VALUES ('cohub-mobile');
 
 CREATE INDEX IF NOT EXISTS releases_channel_runtime ON releases(channel, platform, runtime_version, status);
 CREATE INDEX IF NOT EXISTS releases_app_runtime ON releases(app_id, channel, platform, runtime_version, status);

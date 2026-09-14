@@ -17,6 +17,7 @@ const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 function fixture() {
   const sql = new DatabaseSync(":memory:");
   sql.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  sql.exec("INSERT INTO ota_apps(app_id) VALUES ('cohub-mobile')");
   const objects = new Map();
   const env = {
     OTA_APP_ID: "cohub-mobile", OTA_API_KEY: "publish-secret", YAOTA_ADMIN_TOKEN: "admin-secret",
@@ -99,14 +100,80 @@ test("pinned CLI multipart contract publishes signed manifest and byte-exact ass
     assert.equal(m.assets[0].fileExtension, ".png");
     assert.equal(m.assets[0].contentType, "image/png");
     assert.equal((await signedContent(await manifest(f.env, { "expo-current-update-id": m.id }))).type, "noUpdateAvailable");
-    const listed = await app.request("/api/releases", {}, f.env);
+    const listed = await app.request("/api/ota/state?app_id=cohub-mobile", { headers: { authorization: "Bearer admin-secret" } }, f.env);
     assert.equal((await listed.json()).releases[0].id, m.id);
   } finally { f.sql.close(); }
 });
 
-const manage = (env, path, data = {}, method = "POST") => app.request(`/api/ota/${path}`, {
+const manage = (env, path, data = {}, method = "POST") => app.request(`/api/ota/${path}${path.includes("?") || path === "apps" ? "" : "?app_id=cohub-mobile"}`, {
   method, headers: { authorization: "Bearer admin-secret", "content-type": "application/json" }, body: JSON.stringify(data),
 }, env);
+
+test("app management never mutates shared Worker bindings or crosses app scopes", async () => {
+  const f = fixture();
+  try {
+    Object.freeze(f.env);
+    for (const appId of ["alpha", "beta"]) {
+      assert.equal((await manage(f.env, "apps", { app_id: appId })).status, 201);
+      const result = await manage(f.env, `channels/production?app_id=${appId}`, { branch: `${appId}-stable`, revision: -1 }, "PUT");
+      assert.equal(result.status, 200, await result.clone().text());
+    }
+    for (const appId of ["beta", "alpha", "beta"]) {
+      const response = await app.request(`/api/ota/state?app_id=${appId}`, { headers: { authorization: "Bearer admin-secret" } }, f.env);
+      assert.equal(response.status, 200);
+      const state = await response.json();
+      assert.deepEqual(state.channels.map(c => c.branch), [`${appId}-stable`]);
+      assert.equal(state.events.length, 2, "create app and map channel belong to this app");
+    }
+  } finally { f.sql.close(); }
+});
+
+test("apps require explicit creation, reject ambiguous selection and never register failed publications", async () => {
+  const f = fixture();
+  try {
+    assert.equal((await manage(f.env, "apps", { app_id: "cohub-mobile" })).status, 409);
+    assert.equal((await upload(f.env, { app_id: "unregistered", expoConfig: "{}" })).status, 404);
+    assert.equal((await upload(f.env, { app_id: "different" })).status, 400);
+    assert.equal((await upload(f.env, { expoConfig: "{}" })).status, 400);
+    assert.equal((await app.request("/api/ota/state", { headers: { authorization: "Bearer admin-secret" } }, f.env)).status, 400);
+    assert.equal((await app.request("/api/ota/state?app_id=cohub-mobile&app_id=other", { headers: { authorization: "Bearer admin-secret" } }, f.env)).status, 400);
+    assert.equal(f.sql.prepare("SELECT COUNT(*) AS n FROM ota_apps").get().n, 1);
+    assert.equal((await app.request("/api/ota/apps", { method: "POST", body: JSON.stringify({ app_id: "attacker" }) }, f.env)).status, 401);
+    assert.equal(f.env.OTA_APP_ID, "cohub-mobile");
+  } finally { f.sql.close(); }
+});
+
+test("app-specific signing keys cannot be selected across apps", async () => {
+  const f = fixture();
+  try {
+    const betaKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    await manage(f.env, "apps", { app_id: "beta" });
+    f.env.CODE_SIGNING_APPS = JSON.stringify({
+      "cohub-mobile": { main: { privateKey: f.env.CODE_SIGNING_PRIVATE_KEY } },
+      beta: { main: { privateKey: betaKeys.privateKey.export({ type: "pkcs8", format: "pem" }) } },
+    });
+    await upload(f.env, { app_id: "beta", expoConfig: "{}" });
+    const response = await manifest(f.env, { "expo-app-id": "beta", accept: "application/json" });
+    const signature = Buffer.from(parseDictionary(response.headers.get("expo-signature")).get("sig")[0], "base64");
+    const bytes = Buffer.from(await response.text());
+    assert.ok(verify("RSA-SHA256", bytes, betaKeys.publicKey, signature));
+    assert.equal(verify("RSA-SHA256", bytes, keys.publicKey, signature), false);
+    assert.equal((await manifest(f.env, { "expo-app-id": "unconfigured" })).status, 503);
+  } finally { f.sql.close(); }
+});
+
+test("registry migration preserves existing releases and channels without seeding a default app", () => {
+  const sql = new DatabaseSync(":memory:");
+  try {
+    sql.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+    assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM ota_apps").get().n, 0);
+    sql.exec("DROP TABLE ota_apps; INSERT INTO ota_channels(app_id,name,branch,seed) VALUES('existing','production','stable','seed')");
+    const migration = readFileSync(new URL("../migrations/0003_app_registry.sql", import.meta.url), "utf8");
+    sql.exec(migration);
+    sql.exec(migration);
+    assert.deepEqual(sql.prepare("SELECT app_id FROM ota_apps").all().map(r => r.app_id), ["existing"]);
+  } finally { sql.close(); }
+});
 
 test("rollout cohorts persist, grow monotonically, block overlapping publications and cancel via republish", async () => {
   const f = fixture();
@@ -192,7 +259,7 @@ test("custom runtimes, target params and failed update reports influence selecti
     const failed = { ...headers, "expo-extra-params": 'tier="beta"', "expo-recent-failed-update-ids": `"${target.id}", "${crypto.randomUUID()}"` };
     assert.equal((await signedContent(await manifest(f.env, failed))).id, base.id);
     await manifest(f.env, failed);
-    const report = await app.request("/api/ota/state", { headers: { authorization: "Bearer admin-secret" } }, f.env);
+    const report = await app.request("/api/ota/state?app_id=cohub-mobile", { headers: { authorization: "Bearer admin-secret" } }, f.env);
     assert.deepEqual((await report.json()).failures.map(r => [r.release_id, r.clients]), [[target.id, 1]]);
     assert.equal((await manifest(f.env, { ...headers, "expo-extra-params": "broken==" })).status, 400);
   } finally { f.sql.close(); }
@@ -263,6 +330,25 @@ test("publisher uploads only missing blobs and automatically verifies historical
     assert.equal(current.id, second.id);
     const delta = await app.request(current.launchAsset.url, { headers: { "a-im": "bsdiff", "expo-current-update-id": embeddedId, "expo-requested-update-id": second.id } }, f.env);
     assert.equal(delta.status, 226);
+    await manage(f.env, "apps", { app_id: "second-app" });
+    Object.freeze(f.env);
+    const otherOptions = { ...options, appId: "second-app", platform: "ios", expoConfig: { updates: { requestHeaders: { "expo-app-id": "second-app" } } } };
+    await writeFile(join(dir, "metadata.json"), JSON.stringify({ fileMetadata: { ios: { bundle: "index.hbc", assets: [{ path: "assets/image", ext: "png" }] } } }));
+    // Every request gets fresh bindings, as it may on a different Worker isolate.
+    const isolatedFetcher = (input, init) => app.request(String(input), init, Object.freeze({ ...f.env }));
+    const otherBase = await publishExport(otherOptions, isolatedFetcher);
+    await writeFile(join(dir, "index.hbc"), "abcdef".repeat(2997) + "second-app-change");
+    const otherTarget = await publishExport(otherOptions, isolatedFetcher);
+    assert.equal(otherTarget.patches[0].base, otherBase.id);
+    assert.equal(otherTarget.patches[0].skipped, false);
+    assert.equal((await signedContent(await manifest(f.env, { "expo-app-id": "second-app", "expo-platform": "ios" }))).id, otherTarget.id);
+    const rejected = await manage(f.env, `releases/${otherTarget.id}/rollback?app_id=cohub-mobile`);
+    assert.equal(rejected.status, 404);
+    const rolled = await manage(f.env, `releases/${otherTarget.id}/rollback?app_id=second-app`);
+    assert.equal(rolled.status, 200, await rolled.clone().text());
+    assert.equal((await rolled.json()).release.sourceId, otherBase.id);
+    assert.equal((await signedContent(await manifest(f.env))).id, second.id);
+    assert.equal(f.sql.prepare("SELECT COUNT(*) AS n FROM ota_events WHERE app_id='second-app'").get().n, 6);
   } finally { f.sql.close(); await rm(dir, { recursive: true, force: true }); }
 });
 test("fingerprints, app IDs, runtimes, channels and platforms remain isolated", async () => {
@@ -276,6 +362,7 @@ test("fingerprints, app IDs, runtimes, channels and platforms remain isolated", 
     }
     assert.equal((await upload(f.env, { platform: "ios", runtimeVersion: "d".repeat(40), fingerprint: "e".repeat(40) })).status, 201);
     assert.equal((await signedContent(await manifest(f.env, { "expo-platform": "ios", "expo-runtime-version": "d".repeat(40) }))).runtimeVersion, "d".repeat(40));
+    assert.equal((await manage(f.env, "apps", { app_id: "other" })).status, 201);
     assert.equal((await upload(f.env, { expoConfig: JSON.stringify({ updates: { requestHeaders: { "expo-app-id": "other" } } }) })).status, 201);
   } finally { f.sql.close(); }
 });
@@ -302,7 +389,7 @@ test("content-addressed assets deduplicate and SDK 57 negotiates verified BSDIFF
     const m = await signedContent(await manifest(f.env));
     const patch = await createVerifiedPatch(oldBytes, newBytes);
     const published = await app.request(`/ota-patches/${base.id}/${target.id}`, {
-      method: "PUT", headers: { "x-ota-api-key": "publish-secret" }, body: patch,
+      method: "PUT", headers: { "x-ota-api-key": "publish-secret", "expo-app-id": "cohub-mobile" }, body: patch,
     }, f.env);
     assert.equal(published.status, 200, await published.clone().text());
     const requestHeaders = { "A-IM": "bsdiff", "Expo-Current-Update-ID": base.id, "Expo-Requested-Update-ID": target.id };
@@ -313,7 +400,7 @@ test("content-addressed assets deduplicate and SDK 57 negotiates verified BSDIFF
     assert.deepEqual(Buffer.from(await delta.arrayBuffer()), Buffer.from(patch));
     const other = await (await upload(f.env, { runtimeVersion: "f".repeat(40), bundleBytes: oldBytes })).json();
     const rejected = await app.request(`/ota-patches/${other.id}/${target.id}`, {
-      method: "PUT", headers: { "x-ota-api-key": "publish-secret" }, body: patch,
+      method: "PUT", headers: { "x-ota-api-key": "publish-secret", "expo-app-id": "cohub-mobile" }, body: patch,
     }, f.env);
     assert.equal(rejected.status, 409);
     for (const headers of [{}, { ...requestHeaders, "A-IM": "" }, { ...requestHeaders, "Expo-Current-Update-ID": crypto.randomUUID() }, { ...requestHeaders, "Expo-Requested-Update-ID": base.id }, { ...requestHeaders, "Expo-Current-Update-ID": other.id }]) {
@@ -334,7 +421,7 @@ test("rollback republishes old bytes with a newer identity and promotion isolate
     const otherRuntime = "f".repeat(40);
     const other = await (await upload(f.env, { runtimeVersion: otherRuntime })).json();
     const action = (id, name) => app.request(`/api/releases/${id}/${name}`, {
-      method: "POST", headers: { authorization: "Bearer admin-secret" },
+      method: "POST", headers: { authorization: "Bearer admin-secret", "expo-app-id": "cohub-mobile" },
     }, f.env);
     const rolled = await action(target.id, "rollback");
     assert.equal(rolled.status, 200, await rolled.clone().text());

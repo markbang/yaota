@@ -7,6 +7,7 @@ import Negotiator from "negotiator";
 import { fail, text, object, publisher, admin, authorized, dictionary, failedIds, bucket, otaResponse } from "./ota-protocol.ts";
 import { HASH, UUID, storeBlob, assetDescriptor, publicationInput, publish, publicRelease, branchOf } from "./ota-store.ts";
 import { controls } from "./ota-controls.ts";
+import { requestAppId, requireApp } from "./ota-apps.ts";
 import type { Env, ReleaseRow, ChannelRow, BlobRow, Manifest, Extensions, StringMap } from "./types.ts";
 
 export const ota = new Hono<{ Bindings: Env }>();
@@ -22,7 +23,7 @@ ota.post("/api/ota/upload", async c => {
   if (!c.env.OTA_API_KEY) fail(503, "Publishing key is not configured");
   const headers = new Headers(c.req.raw.headers);
   headers.set("x-ota-api-key", c.env.OTA_API_KEY);
-  return ota.fetch(new Request(new URL("/upload", c.req.url), { method: "POST", headers, body: c.req.raw.body, duplex: "half" } as RequestInit), c.env);
+  return ota.fetch(new Request(new URL(`/upload${new URL(c.req.url).search}`, c.req.url), { method: "POST", headers, body: c.req.raw.body, duplex: "half" } as RequestInit), c.env);
 });
 ota.use("/upload", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.post("/upload", async c => {
@@ -55,6 +56,7 @@ ota.post("/upload", async c => {
 
 ota.use("/ota-publish/*", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.use("/ota-publish/*", async (c, next) => {
+  c.header("Cache-Control", "private, no-store");
   publisher(c);
   if (!c.env.DB || !c.env.ASSETS_R2) fail(503, "OTA storage is not configured");
   return next();
@@ -96,14 +98,15 @@ ota.post("/ota-publish/releases", async c => {
   return c.json(publicRelease(row), 201);
 });
 ota.get("/ota-publish/releases", async c => {
-  const appId = c.req.query("app_id") || c.req.header("expo-app-id") || c.env.OTA_APP_ID;
+  const appId = requestAppId(c);
+  await requireApp(c.env, appId);
   const { results } = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND manifest_json IS NOT NULL ORDER BY created_at DESC").bind(appId).all<ReleaseRow>();
   return c.json({ releases: results.map(publicRelease) });
 });
 
 ota.get("/manifest", async c => {
   if (!c.env.DB) fail(503, "OTA storage is not configured");
-  const appId = text(c.req.header("expo-app-id"), "expo-app-id");
+  const appId = requestAppId(c);
   const channel = text(c.req.header("expo-channel-name"), "expo-channel-name");
   const platform = text(c.req.header("expo-platform"), "expo-platform");
   const runtime = text(c.req.header("expo-runtime-version"), "expo-runtime-version");
@@ -114,7 +117,7 @@ ota.get("/manifest", async c => {
   const mapping = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? AND name=?").bind(appId, channel).first<ChannelRow>();
   let branch = mapping?.branch || channel;
   if (mapping?.rollout_branch && bucket(mapping.seed, client) < mapping.percentage) branch = mapping.rollout_branch;
-  const options = { filters: { branch }, headers: { ...JSON.parse(mapping?.headers_json || "{}"), "yaota-client-id": client } };
+  const options = { appId, filters: { branch }, headers: { ...JSON.parse(mapping?.headers_json || "{}"), "yaota-client-id": client } };
   const failed = failedIds(c.req.header("expo-recent-failed-update-ids"));
   const params = dictionary(c.req.header("expo-extra-params"));
   const { results } = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND (branch=? OR (branch='' AND channel=?)) AND platform=? AND runtime_version=? AND status='Live' AND (manifest_json IS NOT NULL OR directive_json IS NOT NULL) ORDER BY created_at DESC, rowid DESC").bind(appId, branch, branch, platform, runtime).all<ReleaseRow>();
@@ -183,9 +186,10 @@ ota.get("/ota-assets/:id/:hash", async c => {
 ota.use("/ota-patches/*", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.put("/ota-patches/:base/:target", async c => {
   publisher(c);
+  const appId = requestAppId(c);
   const rows = [];
   for (const id of [c.req.param("base"), c.req.param("target")]) {
-    const row = await c.env.DB.prepare("SELECT * FROM releases WHERE id=? AND app_id=? AND manifest_json IS NOT NULL").bind(id, c.env.OTA_APP_ID).first<ReleaseRow>();
+    const row = await c.env.DB.prepare("SELECT * FROM releases WHERE id=? AND app_id=? AND manifest_json IS NOT NULL").bind(id, appId).first<ReleaseRow>();
     if (!row) fail(404, "Release not found");
     rows.push(row);
   }

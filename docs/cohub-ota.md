@@ -9,14 +9,20 @@ APK distribution is outside this integration.
 Use Node 24+ for local tests and the TypeScript publisher. Enable nodejs_compat in Wrangler.
 Bind DB to D1 and ASSETS_R2 to R2. For a fresh database execute schema.sql.
 For a database initialized with the previous yaota schema, execute
-migrations/0001_cohub_ota.sql followed by migrations/0002_ota_controls.sql instead. If 0001 has already been applied, apply only 0002. Do not apply these migrations on top of the fresh schema.
+migrations/0001_cohub_ota.sql, migrations/0002_ota_controls.sql, then migrations/0003_app_registry.sql. Apply only migrations missing from your installation. Migration 0003 is idempotent and backfills applications referenced by existing Yaota data; it does not modify the old service's apps/updates tables. Fresh schema installations need no migrations.
 
-Set OTA_APP_ID=cohub-mobile. Configure Worker secrets:
+There is no default application. Create apps in `/admin` before publishing. Configure Worker secrets:
 
-- OTA_API_KEY: the publishing key used by the existing mobile Actions workflow.
+- OTA_API_KEY: the operator-wide publishing key for this Yaota service.
 - CODE_SIGNING_PRIVATE_KEY: RSA PEM private key matching the existing mobile
   certs/ota-certificate.crt. PKCS#8 and PKCS#1 PEM are accepted.
 - YAOTA_ADMIN_TOKEN: console administration credential.
+
+`node scripts/configure-publisher.ts --apply` creates/reuses an owner-only gitignored `.secrets/publisher.json` and uploads its publishing credential. Do not use it to rotate an already-configured remote credential without coordinating CI.
+
+For per-app signing use `CODE_SIGNING_APPS`, a JSON map of app IDs to key-ID maps of `{privateKey, certificateChain?}`. When this secret exists, no app falls back to the global key. For example, two apps may each use `keyid=main` with different private keys. Without it, the legacy single-key variables or `CODE_SIGNING_KEYS` remain supported.
+
+`node scripts/configure-signing.ts --app-id cohub-mobile --certificate /path/to/client-certificate.crt --private-key /path/to/matching-private-key.pem --apply` checks the certificate's validity and public-key match, then uploads `.secrets/signing-apps.json`. Keep that file as the complete source of truth for all apps: uploading it replaces the remote `CODE_SIGNING_APPS` value. It does not export private keys from Cloudflare or GitHub, generate substitute keys, or change the native certificate.
 
 Never replace the client's trusted certificate to make a server test pass.
 Local development may use .dev.vars (gitignored); production uses wrangler secret put.
@@ -28,8 +34,8 @@ automatically imported from the old service.
 ## Publisher and client
 
 POST /upload accepts the pinned CLI multipart request and x-ota-api-key.
-The credential is bound to OTA_APP_ID; expoConfig must declare the same
-updates.requestHeaders.expo-app-id. Uploads include bundle, asset-N, metadata,
+The credential grants operator-wide publishing access. Supply `app_id` or declare
+updates.requestHeaders.expo-app-id in expoConfig. Supplied IDs must agree; an unknown application is rejected without creating records. Uploads include bundle, asset-N, metadata,
 expoConfig, platform, channel, runtimeVersion, fingerprint and optional commitHash.
 Runtime and fingerprint are distinct hashes: runtime identifies the installed binary,
 fingerprint guards the exported source's native dependencies. Baselines are stored
@@ -54,8 +60,8 @@ bundle hash so the native client validates the reconstructed bytes.
 Generate a patch after uploading two compatible releases:
 
 ```bash
-OTA_SERVER=https://expo-ota.talesofai.com \
-  node scripts/publish-delta.ts BASE_UPDATE_UUID TARGET_UPDATE_UUID
+OTA_SERVER=https://mobile.talesofai.com \
+  node scripts/publish-delta.ts BASE_UPDATE_UUID TARGET_UPDATE_UUID cohub-mobile
 ```
 
 Provide OTA_API_KEY through the environment/CI secret. This command downloads and
@@ -72,15 +78,17 @@ is implemented. Never delete shared blobs when deleting one release.
 
 ## TypeScript publishing and controls
 
-Run `node scripts/publish.ts --export-dir dist --config expo-config.json --platform android --runtime RUNTIME --fingerprint FINGERPRINT` with `OTA_SERVER` and `OTA_API_KEY` in the environment. The publisher uploads only missing SHA-256 blobs, creates a staged update, verifies BSDIFF40 patches against up to three compatible bases by default, then activates the same UUID. `--staged` defers activation. `--embedded-id` registers the exact bundle and native update UUID shipped in a binary, allowing embedded-base patches. Never register a newly exported bundle as an existing binary's embedded content.
+Run `node scripts/publish.ts --app-id cohub-mobile --export-dir dist --config expo-config.json --platform android --runtime RUNTIME --fingerprint FINGERPRINT` with `OTA_SERVER` and `OTA_API_KEY` in the environment. The publisher uploads only missing SHA-256 blobs, creates a staged update, verifies BSDIFF40 patches against up to three compatible bases by default, then activates the same UUID. History, patch upload and activation carry the same explicit application ID, even across separate Worker instances. `--staged` defers activation. `--embedded-id` registers the exact bundle and native update UUID shipped in a binary, allowing embedded-base patches. Never register a newly exported bundle as an existing binary's embedded content.
 
 The composite action in `.github/actions/publish-ota/action.yml` runs this publisher. It is not yet connected to the remote cohub-mobile workflow. Legacy multipart and console uploads remain compatible but do not automatically generate patches.
 
-The authenticated `/api/ota/state` and release/channel controls support staged publishing, promotion, monotonic update rollouts, channel-to-branch mappings, stable branch cohorts, rollback, target parameters, and reported failures. Clients must retain the returned server-defined client ID for stable cohorts. `Expo-Extra-Params` must match target values. Failed IDs are untrusted client reports, not a measured crash rate.
+The authenticated `/api/ota/state?app_id=APP` and release/channel controls support staged publishing, promotion, monotonic update rollouts, channel-to-branch mappings, stable branch cohorts, rollback, target parameters, and reported failures. All management operations require an explicit `app_id` query or `expo-app-id` header; conflicting IDs are rejected. Clients must retain the returned server-defined client ID for stable cohorts. `Expo-Extra-Params` must match target values. Failed IDs are untrusted client reports, not a measured crash rate.
 
 Response negotiation supports JSON and multipart, signature key selection and optional certificate chains. Configure `CODE_SIGNING_KEY_ID` and `CODE_SIGNING_CERTIFICATE_CHAIN` for a single key, or `CODE_SIGNING_KEYS` as a JSON map of key IDs to `{privateKey, certificateChain}`. Production trust still depends on the certificate embedded in the native app.
 
 Per-asset `extensions.assetRequestHeaders` are enforced before serving content. Normal public resources use immutable caching; launch bundles, private resources and patches use no-store. Gzip/Brotli variants are cached in R2 by content hash. Shared blobs and encoded variants must not be deleted just because one release is removed.
+
+This deployment intentionally exposes R2 through public custom domains. Direct object URLs bypass Worker request-header checks. Assets, bundles and patches are public distribution artifacts, not confidential storage. Signatures and hashes provide authenticity/integrity, not secrecy. Manifests keep Worker asset URLs so SDK 57 delta negotiation continues to work.
 
 Run `npm run typecheck`, `npm test`, `npm run test:workerd`, and `npx wrangler deploy --dry-run` before deployment.
 

@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 test("authenticated release creation persists through the SQL storage path", async () => {
   const database = new DatabaseSync(":memory:");
   database.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  database.exec("INSERT INTO ota_apps(app_id) VALUES('test-app')");
   const env = {
     YAOTA_ADMIN_TOKEN: "test-admin",
     DB: {
@@ -26,12 +27,12 @@ test("authenticated release creation persists through the SQL storage path", asy
     const response = await app.request("/api/releases", {
       method: "POST",
       headers: { authorization: "Bearer test-admin", "content-type": "application/json" },
-      body: JSON.stringify({ version: "1.0.0", runtimeVersion: "native-1", channel: "preview" }),
+      body: JSON.stringify({ app_id: "test-app", version: "1.0.0", runtimeVersion: "native-1", channel: "preview" }),
     }, env);
     assert.equal(response.status, 201, await response.clone().text());
     const { release } = await response.json();
     assert.equal(database.prepare("SELECT version FROM releases WHERE id = ?").get(release.id).version, "1.0.0");
-    const listed = await app.request("/api/releases", {}, env);
+    const listed = await app.request("/api/releases?app_id=test-app", { headers: { authorization: "Bearer test-admin" } }, env);
     assert.equal((await listed.json()).releases[0].runtimeVersion, "native-1");
   } finally {
     database.close();

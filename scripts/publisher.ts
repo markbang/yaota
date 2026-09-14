@@ -9,6 +9,7 @@ export interface PublishedRelease {
   fingerprint: string | null; status: string; createdAt: string; manifest: Manifest; extensions?: Extensions;
 }
 export interface PublisherOptions {
+  appId?: string;
   server: string; apiKey: string; exportDir: string; expoConfig: ExpoConfig;
   platform: string; runtimeVersion: string; channel: string; branch?: string; fingerprint?: string;
   rollout?: number; targets?: StringMap; extensions?: Extensions; embeddedId?: string; deltaBases?: number;
@@ -40,13 +41,18 @@ export async function publishPatch(request: Client, base: PublishedRelease, targ
   const targetBytes = await download(target);
   const patch = await createVerifiedPatch(await download(base), targetBytes);
   if (patch.byteLength >= targetBytes.byteLength) return { base: base.id, size: patch.byteLength, skipped: true };
-  await request(`/ota-patches/${base.id}/${target.id}`, { method: "PUT", body: patch });
+  await request(`/ota-patches/${base.id}/${target.id}?app_id=${encodeURIComponent(target.appId)}`, { method: "PUT", body: patch });
   return { base: base.id, size: patch.byteLength, skipped: false };
 }
 export async function publishExport(options: PublisherOptions, fetcher: typeof fetch = fetch) {
   const limit = options.deltaBases ?? 3;
   if (!Number.isInteger(limit) || limit < 0 || limit > 20) throw new Error("deltaBases must be 0-20");
   const request = client(options.server, options.apiKey, fetcher);
+  const appId = options.appId ?? options.expoConfig.updates?.requestHeaders?.["expo-app-id"];
+  if (!appId || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(appId)) throw new Error("A valid app ID is required");
+  if (options.expoConfig.updates?.requestHeaders?.["expo-app-id"] && options.expoConfig.updates.requestHeaders["expo-app-id"] !== appId) throw new Error("App ID does not match Expo config");
+  const scope = `?app_id=${encodeURIComponent(appId)}`;
+  await request(`/ota-publish/releases${scope}`);
   const root = await realpath(options.exportDir);
   async function file(path: string) {
     const resolved = await realpath(resolve(root, path));
@@ -74,19 +80,19 @@ export async function publishExport(options: PublisherOptions, fetcher: typeof f
     await request(`/ota-publish/blobs/${hash}`, { method: "PUT", body: new Uint8Array(bytes) });
   }
   const release = await (await request("/ota-publish/releases", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-    ...options, server: undefined, apiKey: undefined, exportDir: undefined, deltaBases: undefined,
+    ...options, appId, server: undefined, apiKey: undefined, exportDir: undefined, deltaBases: undefined,
     launchAsset, assets, staged: !options.embeddedId, embedded: !!options.embeddedId, id: options.embeddedId,
   }) })).json() as PublishedRelease;
   const patches = [];
   if (!options.embeddedId) {
-    const { releases } = await (await request("/ota-publish/releases")).json() as { releases: PublishedRelease[] };
+    const { releases } = await (await request(`/ota-publish/releases${scope}`)).json() as { releases: PublishedRelease[] };
     const candidates = releases.filter(base => base.id !== release.id && base.status !== "Staged"
       && (["appId", "platform", "runtimeVersion", "fingerprint"] as const).every(k => base[k] === release[k])
       && (base.branch === release.branch || base.status === "Embedded"));
     const bases = [...candidates.filter(b => b.status === "Embedded"), ...candidates.filter(b => b.status !== "Embedded")].slice(0, limit);
     // Keep the release staged until every requested patch has been verified and stored.
     for (const base of bases) patches.push(await publishPatch(request, base, release));
-    if (!options.staged) await request(`/ota-publish/releases/${release.id}/activate`, { method: "POST" });
+    if (!options.staged) await request(`/ota-publish/releases/${release.id}/activate${scope}`, { method: "POST" });
   }
   return { id: release.id, uploadedBlobs: missing.length, reusedBlobs: blobs.size - missing.length, patches, status: options.embeddedId ? "Embedded" : options.staged ? "Staged" : "Live" };
 }

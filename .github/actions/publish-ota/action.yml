@@ -1,6 +1,9 @@
 name: Publish Yaota update
 description: Upload missing Expo assets, verify binary deltas and activate the update
 inputs:
+  app-id:
+    required: true
+    description: Registered Yaota application ID
   server:
     required: true
     description: Yaota HTTPS origin
@@ -31,6 +34,9 @@ inputs:
   delta-bases:
     default: '3'
     description: Maximum compatible base bundles
+  staged:
+    default: 'false'
+    description: Keep the verified release staged for review
 runs:
   using: composite
   steps:
@@ -43,6 +49,7 @@ runs:
     - shell: bash
       env:
         OTA_SERVER: ${{ inputs.server }}
+        OTA_APP: ${{ inputs.app-id }}
         OTA_API_KEY: ${{ inputs.api-key }}
         OTA_EXPORT: ${{ inputs.export-dir }}
         OTA_CONFIG: ${{ inputs.config }}
@@ -52,8 +59,14 @@ runs:
         OTA_CHANNEL: ${{ inputs.channel }}
         OTA_ROLLOUT: ${{ inputs.rollout }}
         OTA_BASES: ${{ inputs.delta-bases }}
+        OTA_STAGED: ${{ inputs.staged }}
       run: |
+        staged_args=()
+        if [[ "$OTA_STAGED" == "true" ]]; then
+          staged_args+=(--staged)
+        fi
         node "${{ github.action_path }}/../../../scripts/publish.ts" \
+          --app-id "$OTA_APP" \
           --export-dir "$OTA_EXPORT" --config "$OTA_CONFIG" --platform "$OTA_PLATFORM" \
           --runtime "$OTA_RUNTIME" --fingerprint "$OTA_FINGERPRINT" --channel "$OTA_CHANNEL" \
-          --rollout "$OTA_ROLLOUT" --delta-bases "$OTA_BASES"
+          --rollout "$OTA_ROLLOUT" --delta-bases "$OTA_BASES" "${staged_args[@]}"
