@@ -12,6 +12,7 @@ interface State {
 let state: State = { appId: "yaota", releases: [], channels: [], failures: [], events: [] };
 let error = "";
 let filter = "all";
+let selectedApp = localStorage.getItem("yaota_app_id") || "cohub-mobile";
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const icon = (name: string) => `<i data-lucide="${name}"></i>`;
 const icons = () => createIcons({ icons: { RefreshCw, KeyRound, Plus, X, Settings2, Layers, GitBranch, Activity, RotateCcw, Upload, Download } });
@@ -38,7 +39,7 @@ function toast(message: string) {
   setTimeout(() => node.classList.remove("show"), 4500);
 }
 async function refresh() {
-  try { state = await api<State>("/api/ota/state"); error = ""; }
+  try { state = await api<State>(`/api/ota/state?app_id=${encodeURIComponent(selectedApp)}`); error = ""; }
   catch (cause) { error = cause instanceof Error ? cause.message : "Connection failed"; }
   render();
   if (error === "Unauthorized" && !sessionStorage.getItem("yaota_admin_prompted")) {
@@ -53,7 +54,7 @@ function render() {
     <div class="brand"><span class="brand-mark">Y</span>yaota</div><div class="workspace"><span class="eyebrow">APPLICATION</span><strong>${escape(state.appId)}</strong></div>
     <nav class="nav"><a class="nav-item active" href="#releases">${icon("layers")}Releases</a><a class="nav-item" href="#channels">${icon("git-branch")}Channels</a><a class="nav-item" href="#failures">${icon("activity")}Failures</a><a class="nav-item" href="#activity">${icon("activity")}Activity</a></nav>
     </aside><main class="main"><header class="topbar"><strong>yaota / OTA</strong><div class="top-actions"><button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh">${icon("refresh-cw")}</button><button class="icon-btn" id="token" title="Admin credentials" aria-label="Admin credentials">${icon("key-round")}</button></div></header>
-    <div class="content"><section class="page-heading"><div><span class="kicker">${escape(state.appId)}</span><h1>Release management</h1></div><button class="primary" id="publish">${icon("upload")}Publish update</button></section>
+    <div class="content"><section class="page-heading"><div><span class="kicker">${escape(state.appId)}</span><h1>Release management</h1><label class="app-switcher">App ID <input id="app-id" value="${escape(selectedApp)}" spellcheck="false"><button class="secondary" id="switch-app" type="button">Switch</button></label></div><button class="primary" id="publish">${icon("upload")}Publish update</button></section>
     ${error ? `<div class="error" role="alert">${escape(error)}</div>` : ""}
     <section class="metrics">${[["Active updates", state.releases.filter(r => r.status === "Live" && r.manifest).length], ["Staged", state.releases.filter(r => r.status === "Staged").length], ["Active rollouts", state.releases.filter(r => r.status === "Live" && r.rollout < 100).length + state.channels.filter(c => c.rollout_branch).length], ["Reported client/update failures", state.failures.reduce((n, f) => n + f.clients, 0)]].map(([label, value]) => `<div class="metric"><span class="metric-label">${label}</span><strong>${value}</strong></div>`).join("")}</section>
     <section class="section" id="releases"><div class="section-head"><h2>Updates</h2><select id="status-filter" aria-label="Release status">${["all", "Live", "Staged", "Archived", "Embedded"].map(s => `<option ${s === filter ? "selected" : ""}>${s}</option>`).join("")}</select></div><div class="table-wrap"><table><thead><tr><th>VERSION / UPDATE</th><th>BRANCH / PLATFORM</th><th>RUNTIME</th><th>ROLLOUT</th><th>STATUS</th><th>CREATED</th><th></th></tr></thead><tbody>${releases.map(r => `<tr><td><strong>${escape(r.directive ? "Embedded rollback" : r.version || "Update")}</strong><small>${escape(r.id.slice(0, 8))} / ${escape(r.note)}</small></td><td>${escape(r.branch)}<small>${escape(r.platform)}</small></td><td><code class="runtime" title="${escape(r.runtimeVersion)}">${escape(r.runtimeVersion)}</code></td><td><div class="coverage"><progress value="${r.rollout}" max="100"></progress>${r.rollout}%</div></td><td><span class="status ${escape(r.status.toLowerCase())}">${escape(r.status)}</span></td><td>${date(r.createdAt)}</td><td><button class="icon-btn" data-release="${escape(r.id)}" title="Manage update" aria-label="Manage ${escape(r.id.slice(0, 8))}">${icon("settings-2")}</button></td></tr>`).join("") || empty(7, "No updates")}</tbody></table></div></section>
@@ -66,6 +67,7 @@ function render() {
   element("#token").onclick = credentials;
   element<HTMLSelectElement>("#status-filter").onchange = e => { filter = (e.target as HTMLSelectElement).value; render(); };
   element("#publish").onclick = publishDialog;
+  element("#switch-app").onclick = () => { selectedApp = element<HTMLInputElement>("#app-id").value.trim(); localStorage.setItem("yaota_app_id", selectedApp); void refresh(); };
   element("#new-channel").onclick = () => channelDialog();
   document.querySelectorAll<HTMLButtonElement>("[data-release]").forEach(button => button.onclick = () => releaseDialog(state.releases.find(r => r.id === button.dataset.release)!));
   document.querySelectorAll<HTMLButtonElement>("[data-channel]").forEach(button => button.onclick = () => channelDialog(state.channels.find(c => c.name === button.dataset.channel)));
@@ -98,7 +100,7 @@ function releaseDialog(release: Release) {
     ${field("percentage", "Rollout percentage", String(release.rollout), "number")}${field("branch", "Destination branch", release.branch)}${field("channel", "Destination channel", release.channel)}
     <label class="check"><input type="checkbox" name="confirmed" required>Confirm this distribution change</label>`, async form => {
     const data = Object.fromEntries(new FormData(form));
-    await api(`/api/ota/releases/${release.id}/${data.action}`, { method: "POST", body: JSON.stringify({ ...data, percentage: Number(data.percentage), revision: release.revision }) });
+    await api(`/api/ota/releases/${release.id}/${data.action}?app_id=${encodeURIComponent(selectedApp)}`, { method: "POST", body: JSON.stringify({ ...data, app_id: selectedApp, percentage: Number(data.percentage), revision: release.revision }) });
   });
 }
 function channelDialog(channel?: State["channels"][number]) {
@@ -109,7 +111,7 @@ function channelDialog(channel?: State["channels"][number]) {
     <label>Server headers (JSON)<textarea name="headers">${escape(JSON.stringify(channel?.headers || {}, null, 2))}</textarea></label>`, async form => {
     const data = Object.fromEntries(new FormData(form));
     if (channel && data.name !== channel.name) throw new Error("Create a new channel to change its name");
-    await api(`/api/ota/channels/${encodeURIComponent(String(data.name))}`, { method: "PUT", body: JSON.stringify({ ...data, percentage: Number(data.percentage), headers: JSON.parse(String(data.headers)), revision: channel?.revision ?? -1 }) });
+    await api(`/api/ota/channels/${encodeURIComponent(String(data.name))}?app_id=${encodeURIComponent(selectedApp)}`, { method: "PUT", body: JSON.stringify({ ...data, app_id: selectedApp, percentage: Number(data.percentage), headers: JSON.parse(String(data.headers)), revision: channel?.revision ?? -1 }) });
   });
 }
 function publishDialog() {
@@ -139,6 +141,7 @@ function publishDialog() {
       if (!file) throw new Error(`Missing asset: ${asset.path}`);
       upload.set(`asset-${index}`, file, file.name);
     });
+    upload.set("app_id", selectedApp);
     await api("/api/ota/upload", { method: "POST", body: upload });
   });
 }
