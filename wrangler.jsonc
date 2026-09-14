@@ -12,14 +12,14 @@
   "observability": {
     "enabled": true
   },
-  // Uncomment after creating the resources with `wrangler d1 create` and your R2 bucket.
-  // "d1_databases": [{
-  //   "binding": "DB",
-  //   "database_name": "yaota",
-  //   "database_id": "replace-with-d1-id"
-  // }],
-  // "r2_buckets": [{
-  //   "binding": "ASSETS_R2",
-  //   "bucket_name": "yaota-assets"
-  // }]
+  "routes": [{ "pattern": "mobile.talesofai.com", "custom_domain": true }],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "cohub-ota-updates",
+    "database_id": "80ad1cc2-817e-4db8-acc0-d72a994d9c6e"
+  }],
+  "r2_buckets": [{
+    "binding": "ASSETS_R2",
+    "bucket_name": "expo-updates"
+  }]
 }
