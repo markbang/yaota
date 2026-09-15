@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS apks (
   version TEXT NOT NULL,
   size TEXT NOT NULL DEFAULT '',
   arch TEXT NOT NULL DEFAULT 'arm64-v8a',
+  sha256 TEXT NOT NULL DEFAULT '',
   downloads INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'Available'

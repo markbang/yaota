@@ -115,6 +115,10 @@ Worker secrets, D1/R2 bindings, and custom domains remain configured in Cloudfla
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
 | `GET /api/health` | Public | Service health |
+| `GET /api/apks` | Public | Android APK catalog (version, ABI, size, SHA-256, download URL) |
+| `POST /api/apks/presign` | Publisher | Register an ABI APK (`cohub-vX.Y.Z-android-<abi>.apk`) |
+| `PUT /api/apks/upload/...` | Publisher | Upload APK bytes to R2 |
+| `GET /apk/cohub-vX.Y.Z-android-<abi>.apk` | Public | Download a published APK |
 | `GET /manifest` | Expo client | Signed manifest or update directive |
 | `GET /ota-assets/ID/HASH` | Expo client | Asset delivery and SDK 57 delta negotiation |
 | `GET /api/ota/apps`, `POST /api/ota/apps` | Admin | List or create applications |

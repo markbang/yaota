@@ -93,6 +93,54 @@ test("admin writes require a token when storage bindings are configured", async 
   assert.equal(response.status, 401);
 });
 
+test("APK presign stores per-ABI objects and lists a public download URL", async () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  const env = {
+    OTA_API_KEY: "publisher-key",
+    YAOTA_ADMIN_TOKEN: "admin",
+    DB: {
+      prepare(sql) {
+        const statement = database.prepare(sql);
+        const bound = (args) => ({
+          bind: (...values) => bound(values),
+          run: async () => statement.run(...args),
+          first: async () => statement.get(...args),
+          all: async () => ({ results: statement.all(...args) }),
+        });
+        return bound([]);
+      },
+    },
+  };
+  try {
+    const denied = await app.request("/api/apks/presign", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: "2.2.11", arch: "arm64-v8a", size: 12, sha256: "a".repeat(64) }),
+    }, env);
+    assert.equal(denied.status, 401);
+    const created = await app.request("/api/apks/presign", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ota-api-key": "publisher-key" },
+      body: JSON.stringify({ version: "2.2.11", arch: "arm64-v8a", size: 12, sha256: "A".repeat(64) }),
+    }, env);
+    assert.equal(created.status, 200, await created.clone().text());
+    const body = await created.json();
+    assert.equal(body.key, "apk/cohub-v2.2.11-android-arm64-v8a.apk");
+    assert.equal(body.publicUrl, "http://localhost/apk/cohub-v2.2.11-android-arm64-v8a.apk");
+    const listed = await app.request("/api/apks", {}, env);
+    assert.equal(listed.status, 200);
+    const { apks } = await listed.json();
+    assert.equal(apks[0].version, "2.2.11");
+    assert.equal(apks[0].arch, "arm64-v8a");
+    assert.equal(apks[0].size, 12);
+    assert.equal(apks[0].sha256, "a".repeat(64));
+    assert.equal(apks[0].url, body.publicUrl);
+  } finally {
+    database.close();
+  }
+});
+
 test("runtime mismatches never receive an incompatible OTA", async () => {
   const response = await app.request("/api/updates", {
     headers: {

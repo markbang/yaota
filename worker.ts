@@ -7,7 +7,15 @@ interface LegacyRelease {
   id: string; version: string; channel: string; platform: string; runtimeVersion: string;
   status: string; rollout: number; createdAt: string; note: string; launchAssetUrl: string | null; assets: unknown[];
 }
-interface ApkRow { key: string; version: string; size: string; arch: string; downloads: number; created_at: string; status: string }
+interface ApkRow { key: string; version: string; size: string; arch: string; sha256?: string; downloads: number; created_at: string; status: string }
+
+const APK_ABI = /^(arm64-v8a|armeabi-v7a|x86|x86_64)$/;
+const APK_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const APK_FILE = /^cohub-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-android-(arm64-v8a|armeabi-v7a|x86|x86_64)\.apk$/;
+
+function apkObjectKey(version: string, arch: string) {
+  return `apk/cohub-v${version}-android-${arch}.apk`;
+}
 
 const seedReleases: LegacyRelease[] = [
   {
@@ -59,7 +67,7 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
 const cors = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization",
+  "access-control-allow-headers": "content-type,authorization,x-ota-api-key",
 };
 const withCors = (response: Response) => {
   const headers = new Headers(response.headers);
@@ -68,11 +76,13 @@ const withCors = (response: Response) => {
 };
 
 function authorized(request: Request, env: Env) {
-  // Seeded local mode is intentionally open; configured storage requires the admin secret.
-  if (!env.YAOTA_ADMIN_TOKEN) return !env.DB && !env.ASSETS_R2;
-  return (
-    request.headers.get("authorization") === `Bearer ${env.YAOTA_ADMIN_TOKEN}`
-  );
+  const admin = env.YAOTA_ADMIN_TOKEN;
+  if (admin && request.headers.get("authorization") === `Bearer ${admin}`) return true;
+  const apiKey = request.headers.get("x-ota-api-key");
+  if (apiKey && env.OTA_API_KEY && apiKey === env.OTA_API_KEY) return true;
+  // Seeded local mode is intentionally open; configured storage requires a secret.
+  if (!admin) return !env.DB && !env.ASSETS_R2;
+  return false;
 }
 
 async function listReleases(env: Env, id?: string, unsignedOnly = false): Promise<LegacyRelease[]> {
@@ -223,40 +233,54 @@ async function patchRelease(env: Env, id: string, payload: JsonObject, origin: s
   return row ? rowToRelease(row) : null;
 }
 
-async function listApks(env: Env) {
-  if (!env.DB)
-    return [
-      {
-        version: "2.3.8",
-        size: "48.2 MB",
-        arch: "arm64-v8a",
-        downloads: 1284,
-        createdAt: "2024-06-12",
-        key: "apk/2.3.8.apk",
-        status: "Available",
-      },
-      {
-        version: "2.3.7",
-        size: "47.9 MB",
-        arch: "arm64-v8a",
-        downloads: 3901,
-        createdAt: "2024-05-28",
-        key: "apk/2.3.7.apk",
-        status: "Available",
-      },
-    ];
-  const { results } = await env.DB.prepare(
-    "SELECT * FROM apks ORDER BY created_at DESC",
-  ).all<ApkRow>();
-  return results.map((row) => ({
+async function ensureApkSchema(env: Env) {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare("ALTER TABLE apks ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''").run();
+  } catch {
+    // Fresh schema.sql already has sha256; existing databases add it once.
+  }
+}
+
+function apkPublicUrl(origin: string, key: string) {
+  return `${origin}/${key}`;
+}
+
+function apkRecord(row: ApkRow, origin: string) {
+  const size = Number(row.size);
+  return {
     version: row.version,
-    size: row.size,
     arch: row.arch,
+    size: Number.isSafeInteger(size) && size > 0 ? size : 0,
+    sha256: typeof row.sha256 === "string" ? row.sha256.toLowerCase() : "",
     downloads: row.downloads,
     createdAt: row.created_at,
     key: row.key,
+    url: apkPublicUrl(origin, row.key),
     status: row.status,
-  }));
+  };
+}
+
+async function listApks(env: Env, origin: string) {
+  if (!env.DB) {
+    return [
+      apkRecord({
+        version: "2.3.8",
+        size: "48200000",
+        arch: "arm64-v8a",
+        sha256: "a".repeat(64),
+        downloads: 1284,
+        created_at: "2024-06-12T00:00:00.000Z",
+        key: apkObjectKey("2.3.8", "arm64-v8a"),
+        status: "Available",
+      }, origin),
+    ];
+  }
+  await ensureApkSchema(env);
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM apks ORDER BY created_at DESC",
+  ).all<ApkRow>();
+  return results.map((row) => apkRecord(row, origin));
 }
 
 async function expoManifest(request: Request, env: Env, url: URL) {
@@ -380,32 +404,35 @@ const worker = {
         );
       }
       if (url.pathname === "/api/apks" && request.method === "GET")
-        return withCors(json({ apks: await listApks(env) }));
+        return withCors(json({ apks: await listApks(env, url.origin) }));
       if (url.pathname === "/api/apks/presign" && request.method === "POST") {
         if (!authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         const body = await request.json();
-        const version = String(body.version || Date.now());
-        const key = `apk/${version}.apk`;
-        if (env.DB)
+        const version = String(body.version || "").trim();
+        const arch = String(body.arch || "").trim();
+        const sha256 = String(body.sha256 || "").trim().toLowerCase();
+        const size = Number(body.size);
+        if (!APK_VERSION.test(version) || !APK_ABI.test(arch))
+          return withCors(json({ error: "version and arch are required" }, 400));
+        if (!Number.isSafeInteger(size) || size <= 0)
+          return withCors(json({ error: "size must be a positive byte count" }, 400));
+        if (!/^[a-f0-9]{64}$/.test(sha256))
+          return withCors(json({ error: "sha256 must be a 64-character hex digest" }, 400));
+        const key = apkObjectKey(version, arch);
+        if (env.DB) {
+          await ensureApkSchema(env);
           await env.DB.prepare(
-            "INSERT OR REPLACE INTO apks (key,version,size,arch,downloads,created_at,status) VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO apks (key,version,size,arch,sha256,downloads,created_at,status) VALUES (?,?,?,?,?,?,?,?)",
           )
-            .bind(
-              key,
-              version,
-              String(body.size || ""),
-              String(body.arch || "arm64-v8a"),
-              0,
-              new Date().toISOString(),
-              "Available",
-            )
+            .bind(key, version, String(size), arch, sha256, 0, new Date().toISOString(), "Available")
             .run();
+        }
         return withCors(
           json({
             key,
             uploadUrl: `${url.origin}/api/apks/upload/${encodeURIComponent(key)}`,
-            publicUrl: `${url.origin}/${key}`,
+            publicUrl: apkPublicUrl(url.origin, key),
           }),
         );
       }
@@ -481,18 +508,22 @@ const worker = {
         return withCors(json({ ok: true, key: decodeURIComponent(upload[1]) }));
       }
       if (url.pathname.startsWith("/apk/") && request.method === "GET") {
+        const filename = decodeURIComponent(url.pathname.slice("/apk/".length));
+        if (!APK_FILE.test(filename))
+          return withCors(json({ error: "APK not found" }, 404));
         if (!env.ASSETS_R2)
           return withCors(
             json({ error: "APK storage is not configured" }, 404),
           );
-        const object = await env.ASSETS_R2.get(
-          `apk/${url.pathname.slice("/apk/".length)}`,
-        );
+        const key = `apk/${filename}`;
+        const object = await env.ASSETS_R2.get(key);
         if (!object) return withCors(json({ error: "APK not found" }, 404));
+        if (env.DB) await env.DB.prepare("UPDATE apks SET downloads = downloads + 1 WHERE key = ?").bind(key).run();
         const headers = new Headers(cors);
         headers.set("content-type", object.httpMetadata?.contentType || "application/vnd.android.package-archive");
         headers.set("etag", object.httpEtag);
-        headers.set("content-disposition", "attachment");
+        headers.set("content-disposition", `attachment; filename="${filename}"`);
+        headers.set("cache-control", "public, max-age=31536000, immutable");
         return new Response(object.body as unknown as ReadableStream, { headers });
       }
       return env.ASSETS
