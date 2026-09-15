@@ -2,6 +2,8 @@
 
 Multi-app Expo Updates service and English admin console, built in strict TypeScript with Hono and the official Cloudflare Workers Vite plugin.
 
+The dashboard uses React 19, HeroUI v3 and Tailwind CSS 4, with application-scoped Releases, Channels, Failures, Activity and Settings views. UI modules live in `src/dashboard/`.
+
 - Dashboard: https://mobile.talesofai.com/admin
 - Signed Expo endpoint: https://mobile.talesofai.com/manifest
 - Public R2 domain: https://r2-mobile.talesofai.com

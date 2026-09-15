@@ -4,7 +4,8 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"], "strict": true, "noEmit": true,
     "allowImportingTsExtensions": true, "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
     "skipLibCheck": true
   },
-  "include": ["worker.ts", "src/**/*.ts", "scripts/**/*.ts", "vite.config.ts"]
+  "include": ["worker.ts", "src/**/*.ts", "src/**/*.tsx", "scripts/**/*.ts", "vite.config.ts"]
 }
