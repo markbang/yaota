@@ -14,14 +14,14 @@ Self-hosted Expo OTA updates on Cloudflare Workers, with signed releases, multi-
 - **Controlled releases.** Stage updates, promote to a branch, increase rollout percentages, or roll back to a previous or embedded update.
 - **Signed distribution.** Immutable update identities, RSA signatures, asset integrity hashes, per-app signing keys, and native fingerprint checks.
 - **Smaller transfers.** Content-addressed R2 storage deduplicates bundles and resources. The TypeScript publisher uploads only missing blobs and generates verified BSDIFF40 patches for SDK 57, with full-bundle fallback.
-- **An operational dashboard.** English-first, responsive React 19 + HeroUI v3 views for Releases, Channels, Failures, Activity, and Settings.
+- **An operational dashboard.** English-first React 19 + HeroUI v3 views, with per-app signing-key imports, rotation and revocation, plus one-time publishing tokens.
 - **CI-ready publishing.** A TypeScript publisher and reusable GitHub Action, plus compatibility with the existing multipart upload contract.
 
 The Worker uses [Hono](https://hono.dev/docs/getting-started/cloudflare-workers-vite) and the official Cloudflare Workers Vite plugin. D1 holds application and release state; R2 holds content-addressed distribution artifacts.
 
 ## Try It Locally
 
-Requires **Node.js 24+**. This starts a populated dashboard backed by disposable local workerd, D1, and R2 instances. No Cloudflare account or production credentials are needed.
+Requires **Node.js 24+ and OpenSSL**. This starts a populated dashboard backed by disposable local workerd, D1, and R2 instances. No Cloudflare account or production credentials are needed.
 
 ```bash
 git clone https://github.com/markbang/yaota.git
@@ -36,7 +36,7 @@ Open the `/admin` URL printed in the terminal and sign in with the test-only tok
 ## Publish an Update
 
 1. Create an application in `/admin`. There is no default app ID.
-2. Configure a publishing credential and the signing private key matching the certificate trusted by the native app.
+2. In Settings, import the signing key and certificate trusted by the native app, then create a publishing token for CI. See [credential setup](docs/credentials.md).
 3. Use the Expo export and public config from the same build, with the runtime embedded in the installed binary.
 
 Run from this repository, with `OTA_API_KEY` supplied through your environment or CI secret:
@@ -69,10 +69,11 @@ See [Mobile CI integration](docs/mobile-ci-integration.md) for the reusable acti
 | `ASSETS_R2` | R2 bundles, resources, compressed variants, and binary patches |
 | `ASSETS` | Dashboard static assets, built by Vite |
 | `YAOTA_ADMIN_TOKEN` | Dashboard sign-in and administration API credential |
-| `OTA_API_KEY` | Operator-wide publishing credential |
-| `CODE_SIGNING_APPS` | Per-app map of signing key IDs to private keys and optional certificate chains |
+| `CREDENTIALS_ENCRYPTION_KEY` | Encrypts managed private keys in D1; initialize once and back it up |
+| `OTA_API_KEY` | Optional legacy operator-wide publishing credential |
+| `CODE_SIGNING_APPS` | Optional environment-backed per-app signing configuration |
 
-Single-key installations can use `CODE_SIGNING_PRIVATE_KEY` instead of `CODE_SIGNING_APPS`. Once per-app signing is configured, unknown apps do not fall back to a global key. Keep private keys and tokens in Worker secrets, never in the repository or Expo public config.
+Settings and the [credential API](docs/credentials.md) manage encrypted per-app signing keys and hashed publishing tokens. Existing `CODE_SIGNING_APPS`, `CODE_SIGNING_KEYS`, and `CODE_SIGNING_PRIVATE_KEY` secrets remain supported. Managed keys override matching app/key IDs, including revocation tombstones. Never put private keys or tokens in the repository, R2, or Expo public config.
 
 Configure your own bindings, database ID, and custom domain in [`wrangler.jsonc`](wrangler.jsonc). The dashboard is served at `/admin` and the Expo manifest endpoint at `/manifest`. Domains under `example.com` in this documentation are placeholders, not hosted services.
 
@@ -118,6 +119,7 @@ Worker secrets, D1/R2 bindings, and custom domains remain configured in Cloudfla
 | `GET /ota-assets/ID/HASH` | Expo client | Asset delivery and SDK 57 delta negotiation |
 | `GET /api/ota/apps`, `POST /api/ota/apps` | Admin | List or create applications |
 | `GET /api/ota/state?app_id=APP` | Admin | Application dashboard state |
+| `/api/ota/credentials/*?app_id=APP` | Admin | Signing keys, public certificates, publishing tokens and revocation |
 | `PUT /api/ota/channels/CHANNEL?app_id=APP` | Admin | Channel mapping and branch rollouts |
 | `POST /api/ota/releases/ID/ACTION?app_id=APP` | Admin | Release distribution controls |
 | `POST /api/ota/upload` | Admin | Expo export upload |

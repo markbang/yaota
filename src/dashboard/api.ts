@@ -1,5 +1,6 @@
 import type { publicRelease } from "../ota-store.ts";
 import type { ChannelRow, StringMap } from "../types.ts";
+import type { CredentialsState } from "../ota-credentials.ts";
 
 export type Release = ReturnType<typeof publicRelease>;
 export type Channel = ChannelRow & { headers: StringMap };
@@ -9,6 +10,7 @@ export interface DashboardState {
   releases: Release[];
   channels: Channel[];
   configuration?: { publishing: boolean; signing: boolean; signingError: string | null };
+  credentials: CredentialsState;
   failures: { release_id: string; clients: number; last_seen: string }[];
   events: { action: string; subject: string; created_at: string }[];
 }

@@ -15,7 +15,7 @@ explicit operations.
 Use Node 24+ for local tests and the TypeScript publisher. Enable nodejs_compat in Wrangler.
 Bind DB to D1 and ASSETS_R2 to R2. For a fresh database execute schema.sql.
 For a database initialized with the previous yaota schema, execute
-migrations/0001_cohub_ota.sql, migrations/0002_ota_controls.sql, then migrations/0003_app_registry.sql. Apply only migrations missing from your installation. Migration 0003 is idempotent and backfills applications referenced by existing Yaota data; it does not modify the old service's apps/updates tables. Fresh schema installations need no migrations.
+migrations/0001_cohub_ota.sql, migrations/0002_ota_controls.sql, migrations/0003_app_registry.sql, then migrations/0004_credentials.sql. Apply only migrations missing from your installation. Migration 0003 is idempotent and backfills applications referenced by existing Yaota data; migration 0004 adds managed credential tables without changing existing secrets. Fresh schema installations need no migrations.
 
 There is no default application. Create apps in `/admin` before publishing. Configure Worker secrets:
 
@@ -23,6 +23,11 @@ There is no default application. Create apps in `/admin` before publishing. Conf
 - CODE_SIGNING_PRIVATE_KEY: RSA PEM private key matching the existing mobile
   certs/ota-certificate.crt. PKCS#8 and PKCS#1 PEM are accepted.
 - YAOTA_ADMIN_TOKEN: console administration credential.
+
+The recommended credential workflow is now **Settings** or the [credential management
+API](credentials.md): initialize `CREDENTIALS_ENCRYPTION_KEY` once, import the matching
+certificate/private key per app, and create a publishing token for CI. The environment
+signing and publishing options below remain supported for existing installations.
 
 `node scripts/configure-publisher.ts --apply` creates/reuses an owner-only gitignored `.secrets/publisher.json` and uploads its publishing credential. Do not use it to rotate an already-configured remote credential without coordinating CI.
 

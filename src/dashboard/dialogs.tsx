@@ -7,9 +7,9 @@ import type { Channel, Release } from "./api.ts";
 import { exportUpload } from "./export-upload.ts";
 import { Choice, CopyButton, Field, Percentage, Status, formatDate } from "./ui.tsx";
 
-interface Callbacks { onClose: () => void; onDone: (appId?: string) => Promise<void>; onUnauthorized: () => void }
+export interface Callbacks { onClose: () => void; onDone: (appId?: string) => Promise<void>; onUnauthorized: () => void }
 
-function FormDialog({ title, context, children, command, icon, onSubmit, onClose, onUnauthorized, locked = false, disabled = false, danger = false }: {
+export function FormDialog({ title, context, children, command, icon, onSubmit, onClose, onUnauthorized, locked = false, disabled = false, danger = false }: {
   title: string; context?: string; children: ReactNode; command: string; icon?: ReactNode;
   onSubmit: (data: FormData) => Promise<void>; onClose: () => void; onUnauthorized: () => void;
   locked?: boolean; disabled?: boolean; danger?: boolean;
@@ -45,12 +45,12 @@ function Confirmation({ selected, onChange }: { selected: boolean; onChange: (va
   return <Checkbox isSelected={selected} onChange={onChange} name="confirmed"><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>Confirm this distribution change</Checkbox.Content></Checkbox>;
 }
 
-function FileField({ name, label, directory = false }: { name: string; label: string; directory?: boolean }) {
+export function FileField({ name, label, directory = false, accept = ".json,application/json" }: { name: string; label: string; directory?: boolean; accept?: string }) {
   const input = useRef<HTMLInputElement>(null);
   const id = useId();
   const [selection, setSelection] = useState("No selection");
   return <div className="file-field"><span id={id}>{label}</span><div className="file-picker"><Button size="sm" variant="secondary" aria-describedby={id} onPress={() => input.current?.click()}>{directory ? <FolderOpen size={15} /> : <FileJson size={15} />}{directory ? "Choose directory" : "Choose file"}</Button><span title={selection}>{selection}</span></div>
-    <input hidden ref={input} type="file" name={name} aria-label={label} {...(directory ? { webkitdirectory: "", multiple: true } : { accept: ".json,application/json" })} onChange={event => {
+    <input hidden ref={input} type="file" name={name} aria-label={label} {...(directory ? { webkitdirectory: "", multiple: true } : { accept })} onChange={event => {
       const files = event.currentTarget.files;
       setSelection(!files?.length ? "No selection" : directory ? `${files.length} files selected` : files[0]!.name);
     }} />

@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import type { Channel, DashboardState, Release } from "./api.ts";
 import { Choice, CopyButton, Empty, IconButton, Status, formatDate } from "./ui.tsx";
+import { CredentialsSettings } from "./credentials.tsx";
 
 function Pager({ page, count, pageSize, onChange }: { page: number; count: number; pageSize: number; onChange: (page: number) => void }) {
   const pages = Math.max(1, Math.ceil(count / pageSize));
@@ -65,8 +66,8 @@ export function ActivityView({ events }: { events: DashboardState["events"] }) {
     </Table.Body></Table.Content></Table.ScrollContainer><Pager page={current} count={events.length} pageSize={size} onChange={setPage} /></Table></section>;
 }
 
-export function SettingsView({ state }: { state: DashboardState }) {
+export function SettingsView({ state, onDone, onUnauthorized }: { state: DashboardState; onDone: () => Promise<void>; onUnauthorized: () => void }) {
   const manifestUrl = `${location.origin}/manifest?app_id=${encodeURIComponent(state.appId)}`;
   return <section className="settings-section"><div className="settings-row"><div><h2>Application</h2></div><dl><dt>App ID</dt><dd className="copy-value"><code>{state.appId}</code><CopyButton value={state.appId} label="Copy app ID" /></dd><dt>Manifest URL</dt><dd className="copy-value"><code>{manifestUrl}</code><CopyButton value={manifestUrl} label="Copy manifest URL" /></dd></dl></div>
-    <div className="settings-row"><h2>Credentials</h2><dl><dt>Publishing key</dt><dd className={state.configuration?.publishing ? "configured-text" : "warning-text"}>{state.configuration?.publishing ? "Configured" : "Not configured"}</dd><dt>Signing key</dt><dd className={state.configuration?.signing ? "configured-text" : "warning-text"}>{state.configuration?.signing ? "Configured" : "Missing or invalid"}</dd>{state.configuration?.signingError && <><dt>Signing status</dt><dd>{state.configuration.signingError}</dd></>}</dl></div></section>;
+    <CredentialsSettings appId={state.appId} credentials={state.credentials} onDone={onDone} onUnauthorized={onUnauthorized} /></section>;
 }

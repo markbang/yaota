@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { credentialsState } from "./ota-credentials.ts";
 import { admin, publisher, fail, object, strings, text, signingKey } from "./ota-protocol.ts";
 import { appId, requestAppId, requireApp } from "./ota-apps.ts";
 import { assertChanged, branchOf, changes, event, getRelease, percentage, publish, publicRelease } from "./ota-store.ts";
@@ -74,10 +75,9 @@ controls.get("/api/ota/state", async c => {
   const releases = await c.env.DB.prepare("SELECT * FROM releases WHERE app_id=? AND (manifest_json IS NOT NULL OR directive_json IS NOT NULL) ORDER BY created_at DESC").bind(app).all<ReleaseRow>();
   const channels = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? ORDER BY name").bind(app).all<ChannelRow>();
   const failures = await c.env.DB.prepare("SELECT release_id,COUNT(*) AS clients,MAX(last_seen) AS last_seen FROM ota_failures WHERE app_id=? GROUP BY release_id ORDER BY last_seen DESC").bind(app).all();
-  const events = await c.env.DB.prepare("SELECT action,subject,created_at FROM ota_events WHERE app_id=? ORDER BY id DESC LIMIT 100").bind(app).all();
-  let signingError: string | null = null;
-  try { signingKey(c.env, new Map(), app); } catch (error) { signingError = error instanceof Error ? error.message : "Invalid signing configuration"; }
-  return c.json({ appId: app, configuration: { publishing: !!c.env.OTA_API_KEY, signing: !signingError, signingError }, releases: releases.results.map(publicRelease), channels: channels.results.map(row => ({ ...row, headers: JSON.parse(row.headers_json) })), failures: failures.results, events: events.results });
+  const events = await c.env.DB.prepare("SELECT action,subject,created_at FROM ota_events WHERE app_id=? OR app_id='' ORDER BY id DESC LIMIT 100").bind(app).all();
+  const credentials = await credentialsState(c.env, app);
+  return c.json({ appId: app, credentials, configuration: { publishing: credentials.publishing.configured, signing: credentials.signing.configured, signingError: credentials.signing.error }, releases: releases.results.map(publicRelease), channels: channels.results.map(row => ({ ...row, headers: JSON.parse(row.headers_json) })), failures: failures.results, events: events.results });
 });
 controls.get("/api/ota/apps", async c => {
   const { results } = await c.env.DB.prepare("SELECT app_id,created_at FROM ota_apps ORDER BY app_id").all();
@@ -101,11 +101,11 @@ controls.on(["POST", "PATCH"], "/api/releases/:id/:action", async (c, next) => {
   return c.json({ release: publicRelease(await releaseAction(c, c.req.param("id"), c.req.param("action"), await body(c))) });
 });
 controls.post("/ota-publish/releases/:id/activate", async c => {
-  publisher(c);
+  await publisher(c);
   if (!c.env.DB) fail(503, "D1 binding is required");
   const app = requestAppId(c);
   const row = await getRelease(c.env, c.req.param("id"), app);
-  signingKey(c.env, new Map(), app);
+  await signingKey(c.env, new Map(), app);
   if (row.status !== "Staged") fail(409, "Only staged updates can activate");
   // Activation retains the UUID used when generating patches, but assigns a fresh creation time.
   const statements = [c.env.DB.prepare("UPDATE releases SET status='Live',revision=revision+1,created_at=strftime('%Y-%m-%dT%H:%M:%fZ',max(julianday('now'),(SELECT max(julianday(created_at))+0.00000002315 FROM releases))) WHERE id=? AND revision=? AND NOT EXISTS(SELECT 1 FROM releases WHERE app_id=? AND branch=? AND platform=? AND runtime_version=? AND status='Live' AND rollout<100)")

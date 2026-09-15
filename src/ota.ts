@@ -7,8 +7,9 @@ import Negotiator from "negotiator";
 import { fail, text, object, publisher, admin, authorized, dictionary, failedIds, bucket, otaResponse } from "./ota-protocol.ts";
 import { HASH, UUID, storeBlob, assetDescriptor, publicationInput, publish, publicRelease, branchOf } from "./ota-store.ts";
 import { controls } from "./ota-controls.ts";
+import { credentialControls } from "./ota-credential-controls.ts";
 import { requestAppId, requireApp } from "./ota-apps.ts";
-import type { Env, ReleaseRow, ChannelRow, BlobRow, Manifest, Extensions, StringMap } from "./types.ts";
+import type { Env, OtaContext, ReleaseRow, ChannelRow, BlobRow, Manifest, Extensions, StringMap } from "./types.ts";
 
 export const ota = new Hono<{ Bindings: Env }>();
 ota.onError((error, c) => {
@@ -18,16 +19,12 @@ ota.onError((error, c) => {
   return c.json({ error: "OTA storage or signing operation failed" }, 500);
 });
 ota.route("/", controls);
-ota.post("/api/ota/upload", async c => {
-  admin(c);
-  if (!c.env.OTA_API_KEY) fail(503, "Publishing key is not configured");
-  const headers = new Headers(c.req.raw.headers);
-  headers.set("x-ota-api-key", c.env.OTA_API_KEY);
-  return ota.fetch(new Request(new URL(`/upload${new URL(c.req.url).search}`, c.req.url), { method: "POST", headers, body: c.req.raw.body, duplex: "half" } as RequestInit), c.env);
-});
+ota.route("/", credentialControls);
+ota.use("/api/ota/upload", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.use("/upload", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
-ota.post("/upload", async c => {
-  publisher(c);
+ota.post("/api/ota/upload", async c => { admin(c); return multipartUpload(c); });
+ota.post("/upload", async c => { await publisher(c); return multipartUpload(c); });
+async function multipartUpload(c: OtaContext) {
   if (!c.env.DB || !c.env.ASSETS_R2) fail(503, "OTA storage is not configured");
   const form = await c.req.raw.formData();
   const fields = Object.fromEntries(form);
@@ -52,12 +49,12 @@ ota.post("/upload", async c => {
   }
   const row = await publish(c, input, launch, assets);
   return c.json({ id: row.id, createdAt: row.created_at, runtimeVersion: row.runtime_version }, 201);
-});
+}
 
 ota.use("/ota-publish/*", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.use("/ota-publish/*", async (c, next) => {
   c.header("Cache-Control", "private, no-store");
-  publisher(c);
+  await publisher(c);
   if (!c.env.DB || !c.env.ASSETS_R2) fail(503, "OTA storage is not configured");
   return next();
 });
@@ -185,7 +182,7 @@ ota.get("/ota-assets/:id/:hash", async c => {
 
 ota.use("/ota-patches/*", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.put("/ota-patches/:base/:target", async c => {
-  publisher(c);
+  await publisher(c);
   const appId = requestAppId(c);
   const rows = [];
   for (const id of [c.req.param("base"), c.req.param("target")]) {

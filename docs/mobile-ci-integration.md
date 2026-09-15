@@ -5,8 +5,8 @@ The existing `markbang/cohub-mobile` workflow still uses its old publisher and u
 ## Prerequisites
 
 1. Create `cohub-mobile` in the Yaota dashboard, retaining its exact ID.
-2. Configure the signing private key that matches `certs/ota-certificate.crt` using `scripts/configure-signing.ts`. The public certificate alone is insufficient.
-3. Add a separate GitHub Actions secret `YAOTA_OTA_API_KEY` using the value of `OTA_API_KEY` in `.secrets/publisher.json`. Keep the existing `OTA_API_KEY` for the old service until cutover is explicitly approved.
+2. Import the signing private key and matching `certs/ota-certificate.crt` in Dashboard Settings or through the [credential API](credentials.md). The environment-backed `scripts/configure-signing.ts` is also supported. The public certificate alone is insufficient.
+3. Create a publishing token in Settings and add it as a separate GitHub Actions secret `YAOTA_OTA_API_KEY`. Existing installations may use the legacy `.secrets/publisher.json` value. Keep the old service's `OTA_API_KEY` until cutover is explicitly approved.
 4. Reuse the exact export directory from the Android/iOS build job. Resolve the native runtime and source fingerprint separately; never replace both with a guessed app version.
 
 ## Canary Publish

@@ -1,8 +1,10 @@
-import { createHash, createPrivateKey, createPublicKey, X509Certificate, sign, timingSafeEqual } from "node:crypto";
+import { createHash, sign, timingSafeEqual } from "node:crypto";
 import { HTTPException } from "hono/http-exception";
 import { parseDictionary, parseList, serializeDictionary } from "structured-headers";
 import Negotiator from "negotiator";
-import type { OtaContext, Env, JsonObject, StringMap } from "./types.ts";
+import type { OtaContext, JsonObject, StringMap } from "./types.ts";
+import { managedPublisher, publishingSettings, signingKey } from "./ota-credentials.ts";
+export { signingKey } from "./ota-credentials.ts";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Dictionary } from "structured-headers";
 
@@ -26,8 +28,13 @@ export function strings(value: unknown, name: string): StringMap {
 export function authorized(given: string | undefined, expected: string | undefined) {
   return !!given && !!expected && timingSafeEqual(createHash("sha256").update(given).digest(), createHash("sha256").update(expected).digest());
 }
-export function publisher(c: OtaContext) {
-  if (!authorized(c.req.header("x-ota-api-key"), c.env.OTA_API_KEY)) fail(401, "Unauthorized");
+export async function publisher(c: OtaContext) {
+  const given = c.req.header("x-ota-api-key");
+  if (!given || given.length > 1024) fail(401, "Unauthorized");
+  if (!c.env.DB) fail(503, "D1 binding is required");
+  const settings = await publishingSettings(c.env);
+  if (settings.legacy_enabled && authorized(given, c.env.OTA_API_KEY)) return;
+  if (!await managedPublisher(c.env, given)) fail(401, "Unauthorized");
 }
 export function admin(c: OtaContext) {
   if (!authorized(c.req.header("authorization"), c.env.YAOTA_ADMIN_TOKEN && `Bearer ${c.env.YAOTA_ADMIN_TOKEN}`)) fail(401, "Unauthorized");
@@ -47,30 +54,8 @@ export function failedIds(header: string | undefined): string[] {
 export const sfv = (values: StringMap) => serializeDictionary(new Map(Object.entries(values).map(([k, v]) => [k, [v, new Map()]])));
 export const bucket = (seed: string, client: string) => createHash("sha256").update(`${seed}:${client}`).digest().readUInt32BE(0) / 4294967296 * 100;
 
-export function signingKey(env: Env, expected: Dictionary = new Map(), appId?: string) {
-  const keyid = String(expected.get("keyid")?.[0] || env.CODE_SIGNING_KEY_ID || "main");
-  if (expected.has("alg") && String(expected.get("alg")?.[0]) !== "rsa-v1_5-sha256") fail(406, "Unsupported signing algorithm");
-  const appKeys = env.CODE_SIGNING_APPS ? object(env.CODE_SIGNING_APPS, "CODE_SIGNING_APPS") : null;
-  if (appKeys && (!appId || !Object.hasOwn(appKeys, appId))) fail(503, "Signing keys are not configured for this application");
-  const entries = appKeys ? object(appKeys[appId!], "application signing keys") : env.CODE_SIGNING_KEYS ? object(env.CODE_SIGNING_KEYS, "CODE_SIGNING_KEYS") : {
-    [env.CODE_SIGNING_KEY_ID || "main"]: { privateKey: env.CODE_SIGNING_PRIVATE_KEY, certificateChain: env.CODE_SIGNING_CERTIFICATE_CHAIN },
-  };
-  if (!Object.hasOwn(entries, keyid)) fail(406, "Requested signing key is unavailable");
-  const entry = object(entries[keyid], "signing key");
-  if (!entry.privateKey) fail(503, "OTA signing key is not configured");
-  if (typeof entry.privateKey !== "string") fail(503, "Invalid signing key");
-  const key = createPrivateKey(entry.privateKey);
-  if (key.asymmetricKeyType !== "rsa") fail(503, "OTA signing key must be RSA");
-  if (entry.certificateChain) {
-    if (typeof entry.certificateChain !== "string") fail(503, "Invalid certificate chain");
-    const cert = new X509Certificate(entry.certificateChain);
-    if (!cert.publicKey.equals(createPublicKey(key))) fail(503, "Signing certificate does not match key");
-  }
-  return { key, keyid, chain: entry.certificateChain as string | undefined };
-}
-
-export function otaResponse(c: OtaContext, content: unknown, field: string, { filters = {}, headers = {}, extensions = {}, appId }: { filters?: StringMap; headers?: StringMap; extensions?: object; appId?: string } = {}) {
-  const signer = signingKey(c.env, dictionary(c.req.header("expo-expect-signature")), appId);
+export async function otaResponse(c: OtaContext, content: unknown, field: string, { filters = {}, headers = {}, extensions = {}, appId }: { filters?: StringMap; headers?: StringMap; extensions?: object; appId?: string } = {}) {
+  const signer = await signingKey(c.env, dictionary(c.req.header("expo-expect-signature")), appId);
   const multipartOnly = field !== "manifest" || Object.keys(extensions).length || signer.chain;
   const type = new Negotiator({ headers: { accept: c.req.header("accept") || "*/*" } })
     .mediaType(multipartOnly ? ["multipart/mixed"] : ["multipart/mixed", "application/expo+json", "application/json"]);

@@ -26,7 +26,7 @@ function Dashboard() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   useEffect(() => { const change = () => setView(currentView()); window.addEventListener("hashchange", change); return () => window.removeEventListener("hashchange", change); }, []);
   const ready = phase === "ready" && !!state && state.appId === selectedApp;
-  const canPublish = ready && !!state.configuration?.publishing && !!state.configuration?.signing;
+  const canPublish = ready && !!state.configuration?.signing;
   const title = navigation.find(item => item.id === view)!.label;
   const close = () => setDialog(null);
   const callbacks = { onClose: close, onDone: refresh, onUnauthorized: signOut };
@@ -54,7 +54,7 @@ function Dashboard() {
         {view === "channels" && <ChannelsView channels={state.channels} onManage={channel => setDialog({ type: "channel", appId: state.appId, channel })} createAction={createChannel} />}
         {view === "failures" && <FailuresView failures={state.failures} />}
         {view === "activity" && <ActivityView key={state.appId} events={state.events} />}
-        {view === "settings" && <SettingsView state={state} />}
+        {view === "settings" && <SettingsView key={state.appId} state={state} onDone={refresh} onUnauthorized={signOut} />}
         <footer className="content-footer"><span><span className="status-dot" />Connected</span><span>{state.appId}</span></footer>
       </>}
     </div>

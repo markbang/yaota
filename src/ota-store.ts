@@ -61,7 +61,7 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
   const configuredAppId = config.updates?.requestHeaders?.["expo-app-id"];
   const appId = requestAppId(c, fields.app_id, fields.appId, configuredAppId);
   await requireApp(c.env, appId);
-  signingKey(c.env, new Map(), appId);
+  await signingKey(c.env, new Map(), appId);
   const channel = text(fields.channel, "channel");
   const mapping = await c.env.DB.prepare("SELECT * FROM ota_channels WHERE app_id=? AND name=?").bind(appId, channel).first<ChannelRow>();
   if (mapping?.rollout_branch && !fields.branch) fail(409, "Specify a branch during a channel rollout");
@@ -85,7 +85,7 @@ export async function publicationInput(c: OtaContext, fields: JsonObject): Promi
 export async function publish(c: OtaContext, input: Publication, launchAsset: Asset | null, assets: Asset[], options: PublishOptions = {}) {
   const { env } = c;
   await requireApp(env, input.appId);
-  signingKey(env, new Map(), input.appId);
+  await signingKey(env, new Map(), input.appId);
   const id = input.id || crypto.randomUUID();
   const origin = new URL(c.req.url).origin;
   const withUrl = (asset: Asset) => ({ ...asset, url: `${origin}/ota-assets/${id}/${asset.hash}` });

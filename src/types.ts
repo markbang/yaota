@@ -15,6 +15,7 @@ export interface Env {
   CODE_SIGNING_KEYS?: string;
   CODE_SIGNING_APPS?: string;
   CODE_SIGNING_CERTIFICATE_CHAIN?: string;
+  CREDENTIALS_ENCRYPTION_KEY?: string;
 }
 export type OtaContext = Context<{ Bindings: Env }>;
 export interface Asset { key: string; hash: string; contentType: string; fileExtension?: string; url?: string }

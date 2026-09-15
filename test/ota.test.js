@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import { generateKeyPairSync, verify, createHash } from "node:crypto";
+import { generateKeyPairSync, verify, createHash, randomBytes } from "node:crypto";
+import { testCertificate } from "./helpers/signing.ts";
 import app from "../worker.ts";
 import { createVerifiedPatch } from "../scripts/delta.ts";
 import { bucket } from "../src/ota-protocol.ts";
@@ -51,7 +52,7 @@ function fixture() {
   return { sql, objects, env };
 }
 const runtime = "a".repeat(40);
-function upload(env, overrides = {}) {
+function upload(env, overrides = {}, request = {}) {
   const fields = {
     channel: "production", platform: "android", runtimeVersion: runtime, fingerprint: "b".repeat(40),
     expoConfig: JSON.stringify({ version: "2.2.0", slug: "cohub-mobile", extra: { api: "https://example.com" }, updates: { requestHeaders: { "expo-app-id": "cohub-mobile" } } }),
@@ -62,7 +63,7 @@ function upload(env, overrides = {}) {
   Object.entries(fields).forEach(([key, value]) => body.set(key, value));
   body.set("bundle", new File([overrides.bundleBytes || "hermes-bytecode-fixture"], "index.hbc"));
   body.set("asset-0", new File(["image-fixture"], "imagehash"));
-  return app.request("/upload", { method: "POST", headers: { "x-ota-api-key": "publish-secret" }, body }, env);
+  return app.request(request.path || "/upload", { method: "POST", headers: request.headers || { "x-ota-api-key": "publish-secret" }, body }, env);
 }
 async function manifest(env, overrides = {}) {
   return app.request("/manifest", { headers: {
@@ -108,6 +109,153 @@ test("pinned CLI multipart contract publishes signed manifest and byte-exact ass
 const manage = (env, path, data = {}, method = "POST") => app.request(`/api/ota/${path}${path.includes("?") || path === "apps" ? "" : "?app_id=cohub-mobile"}`, {
   method, headers: { authorization: "Bearer admin-secret", "content-type": "application/json" }, body: JSON.stringify(data),
 }, env);
+
+const signingPem = keys.privateKey.export({ type: "pkcs8", format: "pem" });
+const signingCertificate = testCertificate(signingPem);
+const otherKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const otherPem = otherKeys.privateKey.export({ type: "pkcs8", format: "pem" });
+const otherCertificate = testCertificate(otherPem);
+const credentials = (env, appId = "cohub-mobile") => app.request(`/api/ota/credentials?app_id=${appId}`, { headers: { authorization: "Bearer admin-secret" } }, env);
+const importKey = (env, keyId = "main", revision = 0, overrides = {}) => manage(env, `credentials/signing/keys/${keyId}`, { certificate: signingCertificate, privateKey: signingPem, revision, ...overrides }, "PUT");
+
+test("credential APIs require admin and explicit registered app; responses never disclose secrets", async () => {
+  const f = fixture();
+  try {
+    f.env.CREDENTIALS_ENCRYPTION_KEY = randomBytes(32).toString("base64url");
+    for (const [path, method] of [["credentials", "GET"], ["credentials/signing/validate", "POST"], ["credentials/signing/keys/main", "PUT"], ["credentials/signing/default", "PUT"], ["credentials/signing/keys/main/revoke", "POST"], ["credentials/signing/keys/main/certificate", "GET"], ["credentials/publishing/tokens", "POST"], ["credentials/publishing/tokens/none/revoke", "POST"], ["credentials/publishing/legacy", "PUT"]]) {
+      assert.equal((await app.request(`/api/ota/${path}?app_id=cohub-mobile`, { method }, f.env)).status, 401, path);
+    }
+    assert.equal((await credentials(f.env, "missing")).status, 404);
+    assert.equal((await credentials(f.env, "cohub-mobile&app_id=other")).status, 400);
+    assert.equal((await app.request("/api/ota/credentials", { headers: { authorization: "Bearer admin-secret" } }, f.env)).status, 400);
+    assert.equal((await importKey(f.env)).status, 201);
+    const response = await credentials(f.env);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    const state = await response.json();
+    assert.equal(state.signing.keys[0].source, "managed");
+    assert.equal(state.signing.configured, true);
+    const serialized = JSON.stringify(state);
+    assert.ok(!serialized.includes("PRIVATE KEY"));
+    assert.ok(!serialized.includes("encrypted_private_key"));
+    assert.ok(!serialized.includes(f.env.CREDENTIALS_ENCRYPTION_KEY));
+    const stored = f.sql.prepare("SELECT encrypted_private_key FROM ota_signing_keys").get().encrypted_private_key;
+    assert.ok(!stored.includes("PRIVATE KEY"));
+    assert.ok(!serialized.includes(stored));
+    const cert = await app.request("/api/ota/credentials/signing/keys/main/certificate?app_id=cohub-mobile", { headers: { authorization: "Bearer admin-secret" } }, f.env);
+    assert.equal(cert.status, 200);
+    assert.match(await cert.text(), /BEGIN CERTIFICATE/);
+    const events = JSON.stringify(f.sql.prepare("SELECT * FROM ota_events").all());
+    assert.ok(!events.includes("PRIVATE KEY"));
+    assert.ok(!events.includes(stored));
+  } finally { f.sql.close(); }
+});
+
+test("signing import validates PEM, key match, RSA strength, expiry, encryption and revisions", async () => {
+  const f = fixture();
+  try {
+    assert.equal((await importKey(f.env)).status, 503);
+    f.env.CREDENTIALS_ENCRYPTION_KEY = randomBytes(32).toString("base64url");
+    const weakPem = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type: "pkcs8", format: "pem" });
+    for (const data of [
+      { certificate: "invalid", privateKey: "invalid" },
+      { certificate: signingCertificate + signingCertificate, privateKey: signingPem },
+      { certificate: signingCertificate, privateKey: otherPem },
+      { certificate: testCertificate(signingPem, true), privateKey: signingPem },
+      { certificate: testCertificate(weakPem), privateKey: weakPem },
+    ]) assert.equal((await manage(f.env, "credentials/signing/validate", data)).status, 400);
+    assert.equal((await manage(f.env, "credentials/signing/validate", { certificate: signingCertificate, privateKey: signingPem })).status, 200);
+    assert.equal(f.sql.prepare("SELECT count(*) AS n FROM ota_signing_keys").get().n, 0, "validation does not persist");
+    assert.equal((await importKey(f.env)).status, 201);
+    assert.equal((await importKey(f.env, "other", 0)).status, 409);
+    assert.equal((await importKey(f.env, "main", 1, { certificate: otherCertificate, privateKey: otherPem })).status, 409);
+    assert.equal((await importKey(f.env, "main", 1)).status, 200);
+    const oversized = await manage(f.env, "credentials/signing/validate", { certificate: "a".repeat(70000), privateKey: signingPem });
+    assert.equal(oversized.status, 413);
+    const malformed = await app.request("/api/ota/credentials/signing/validate?app_id=cohub-mobile", { method: "POST", headers: { authorization: "Bearer admin-secret" }, body: "{secret" }, f.env);
+    assert.equal(malformed.status, 400);
+    assert.ok(!(await malformed.text()).includes("secret"));
+  } finally { f.sql.close(); }
+});
+
+test("managed signing rotates across key IDs, stays app-scoped and revoked keys never fall back", async () => {
+  const f = fixture();
+  try {
+    f.env.CREDENTIALS_ENCRYPTION_KEY = randomBytes(32).toString("base64url");
+    await manage(f.env, "apps", { app_id: "beta" });
+    assert.equal((await importKey(f.env)).status, 201);
+    assert.equal((await importKey(f.env, "next", 1, { certificate: otherCertificate, privateKey: otherPem, makeDefault: true })).status, 201);
+    assert.equal((await upload(f.env)).status, 201);
+    for (const [keyId, publicKey] of [["main", keys.publicKey], ["next", otherKeys.publicKey]]) {
+      const response = await manifest(f.env, { "expo-expect-signature": `sig, keyid="${keyId}"`, accept: "application/json" });
+      assert.equal(response.status, 200);
+      const header = parseDictionary(response.headers.get("expo-signature"));
+      assert.equal(header.get("keyid")[0], keyId);
+      assert.ok(verify("RSA-SHA256", Buffer.from(await response.text()), publicKey, Buffer.from(header.get("sig")[0], "base64")));
+    }
+    const next = await manifest(f.env, { "expo-expect-signature": "sig", accept: "application/json" });
+    assert.equal(parseDictionary(next.headers.get("expo-signature")).get("keyid")[0], "next");
+    assert.equal((await manifest(f.env, { "expo-app-id": "beta", "expo-expect-signature": 'sig, keyid="next"' })).status, 406);
+    const beta = await (await credentials(f.env, "beta")).json();
+    assert.equal(beta.signing.keys.some(key => key.keyId === "next"), false);
+    assert.equal((await manage(f.env, "credentials/signing/keys/main/revoke", { revision: 2 })).status, 400);
+    assert.equal((await manage(f.env, "credentials/signing/keys/main/revoke", { revision: 2, confirm: true })).status, 200);
+    assert.equal((await manifest(f.env)).status, 503);
+    assert.equal((await importKey(f.env, "main", 3)).status, 409);
+    assert.equal(f.sql.prepare("SELECT encrypted_private_key FROM ota_signing_keys WHERE key_id='main'").get().encrypted_private_key, null);
+    assert.equal((await manage(f.env, "credentials/signing/default", { keyId: "main", revision: 3 }, "PUT")).status, 503);
+    assert.equal((await manifest(f.env, { "expo-expect-signature": 'sig, keyid="next"' })).status, 200);
+  } finally { f.sql.close(); }
+});
+
+test("managed keys fail closed on ciphertext tampering, app/key replay and lost encryption secret", async () => {
+  const f = fixture();
+  try {
+    f.env.CREDENTIALS_ENCRYPTION_KEY = randomBytes(32).toString("base64url");
+    await importKey(f.env);
+    const original = f.sql.prepare("SELECT encrypted_private_key FROM ota_signing_keys").get().encrypted_private_key;
+    const tampered = Buffer.from(original, "base64url"); tampered[30] ^= 1;
+    f.sql.prepare("UPDATE ota_signing_keys SET encrypted_private_key=?").run(tampered.toString("base64url"));
+    assert.equal((await manifest(f.env)).status, 503);
+    f.sql.prepare("UPDATE ota_signing_keys SET encrypted_private_key=?,key_id='copied'").run(original);
+    assert.equal((await manifest(f.env, { "expo-expect-signature": 'sig, keyid="copied"' })).status, 503);
+    f.sql.exec("UPDATE ota_signing_keys SET key_id='main',app_id='beta'");
+    assert.equal((await manifest(f.env, { "expo-app-id": "beta" })).status, 503);
+    f.sql.exec("UPDATE ota_signing_keys SET app_id='cohub-mobile'");
+    delete f.env.CREDENTIALS_ENCRYPTION_KEY;
+    assert.equal((await manifest(f.env)).status, 503);
+    assert.equal((await upload(f.env)).status, 503);
+  } finally { f.sql.close(); }
+});
+
+test("publishing tokens are one-time, hashed, revision-guarded, revocable and cannot authorize admin routes", async () => {
+  const f = fixture();
+  try {
+    const created = await manage(f.env, "credentials/publishing/tokens", { name: "CI", revision: 0 });
+    assert.equal(created.status, 201);
+    assert.equal(created.headers.get("cache-control"), "private, no-store");
+    const token = await created.json();
+    assert.match(token.token, /^yaota_pub_[A-Za-z0-9_-]{43}$/);
+    assert.equal((await manage(f.env, "credentials/publishing/tokens", { name: "stale", revision: 0 })).status, 409);
+    const state = await (await credentials(f.env)).json();
+    assert.ok(!JSON.stringify(state).includes(token.token));
+    assert.ok(!JSON.stringify(state).includes("token_hash"));
+    const stored = f.sql.prepare("SELECT * FROM ota_publishing_tokens").get();
+    assert.equal(stored.token_hash, createHash("sha256").update(token.token).digest("hex"));
+    assert.ok(!JSON.stringify(f.sql.prepare("SELECT * FROM ota_events").all()).includes(token.token));
+    assert.equal((await upload(f.env, {}, { headers: { "x-ota-api-key": token.token } })).status, 201);
+    assert.equal((await app.request("/api/ota/apps", { headers: { authorization: `Bearer ${token.token}` } }, f.env)).status, 401);
+    assert.equal((await manage(f.env, "credentials/publishing/legacy", { enabled: false, confirm: true, revision: 1 }, "PUT")).status, 200);
+    assert.equal((await upload(f.env)).status, 401);
+    assert.equal((await upload(f.env, {}, { headers: { "x-ota-api-key": token.token } })).status, 201);
+    assert.equal((await manage(f.env, `credentials/publishing/tokens/${token.id}/revoke`, { revision: 2, confirm: true })).status, 200);
+    assert.equal((await upload(f.env, {}, { headers: { "x-ota-api-key": token.token } })).status, 401);
+    assert.equal((await app.request("/ota-publish/releases?app_id=cohub-mobile", { headers: { "x-ota-api-key": token.token } }, f.env)).status, 401);
+    assert.equal((await upload(f.env, {}, { path: "/api/ota/upload", headers: { authorization: "Bearer admin-secret" } })).status, 201);
+    delete f.env.OTA_API_KEY;
+    assert.equal((await upload(f.env, {}, { path: "/api/ota/upload", headers: { authorization: "Bearer admin-secret" } })).status, 201);
+    assert.equal((await upload(f.env, {}, { path: "/api/ota/upload", headers: {} })).status, 401);
+  } finally { f.sql.close(); }
+});
 
 test("app management never mutates shared Worker bindings or crosses app scopes", async () => {
   const f = fixture();

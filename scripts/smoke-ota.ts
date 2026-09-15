@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { generateKeyPairSync, verify } from "node:crypto";
+import { generateKeyPairSync, randomBytes, verify } from "node:crypto";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { createVerifiedPatch } from "./delta.ts";
 import { gunzipSync, brotliDecompressSync } from "node:zlib";
+import { testCertificate } from "../test/helpers/signing.ts";
+import { validateSigningMaterial } from "../src/ota-credentials.ts";
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const worker = new Miniflare(convertV4MiniflareOptions({
@@ -19,6 +21,7 @@ const worker = new Miniflare(convertV4MiniflareOptions({
   bindings: {
     YAOTA_ADMIN_TOKEN: "local-admin-only", OTA_API_KEY: "local-test-only",
     CODE_SIGNING_PRIVATE_KEY: keys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    CREDENTIALS_ENCRYPTION_KEY: randomBytes(32).toString("base64url"),
   },
 }));
 try {
@@ -91,6 +94,26 @@ try {
   const manage = (path: string, body: object, method = "POST") => worker.dispatchFetch(`https://ota.local/api/ota/${path}`, {
     method, headers: { authorization: "Bearer local-admin-only", "content-type": "application/json" }, body: JSON.stringify(body),
   });
+  const privateKey = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const certForSmoke = testCertificate(privateKey);
+  validateSigningMaterial(certForSmoke, privateKey);
+  const imported = await manage("credentials/signing/keys/managed-main?app_id=cohub-mobile", { certificate: certForSmoke, privateKey, revision: 0, makeDefault: true }, "PUT");
+  assert.equal(imported.status, 201, await imported.clone().text());
+  const signed = await worker.dispatchFetch("https://ota.local/manifest", { headers: {
+    "expo-app-id": "cohub-mobile", "expo-channel-name": "production", "expo-platform": "android", "expo-runtime-version": runtime, "expo-protocol-version": "1",
+  } });
+  assert.equal(signed.status, 200, await signed.clone().text());
+  const signedBody = await signed.text();
+  assert.ok(verify("RSA-SHA256", Buffer.from(signedBody.split("\r\n\r\n")[1].split("\r\n--")[0]), keys.publicKey, Buffer.from(/expo-signature: sig="([^"]+)"/.exec(signedBody)![1], "base64")));
+  const tokenResponse = await manage("credentials/publishing/tokens?app_id=cohub-mobile", { name: "Smoke CI", revision: 0 });
+  assert.equal(tokenResponse.status, 201, await tokenResponse.clone().text());
+  const token = await tokenResponse.json() as { id: string; token: string };
+  assert.equal((await manage("credentials/publishing/legacy?app_id=cohub-mobile", { enabled: false, confirm: true, revision: 1 }, "PUT")).status, 200);
+  assert.equal((await worker.dispatchFetch("https://ota.local/ota-publish/releases?app_id=cohub-mobile", { headers: { "x-ota-api-key": token.token } })).status, 200);
+  assert.equal((await worker.dispatchFetch("https://ota.local/ota-publish/releases?app_id=cohub-mobile", { headers: { "x-ota-api-key": "local-test-only" } })).status, 401);
+  assert.equal((await manage(`credentials/publishing/tokens/${token.id}/revoke?app_id=cohub-mobile`, { confirm: true, revision: 2 })).status, 200);
+  assert.equal((await worker.dispatchFetch("https://ota.local/ota-publish/releases?app_id=cohub-mobile", { headers: { "x-ota-api-key": token.token } })).status, 401);
+  assert.equal((await manage("credentials/publishing/legacy?app_id=cohub-mobile", { enabled: true, confirm: true, revision: 3 }, "PUT")).status, 200);
   assert.equal((await manage("apps", { app_id: "second-app" })).status, 201);
   assert.equal((await manage("channels/production?app_id=second-app", { branch: "second-stable", revision: -1 }, "PUT")).status, 200);
   for (const appId of ["cohub-mobile", "second-app", "cohub-mobile", "second-app"]) {
@@ -107,7 +130,7 @@ try {
   assert.equal(adminPage.status, 200);
   assert.match(await adminPage.text(), /lang="en"/);
   assert.equal((await worker.dispatchFetch("https://ota.local/api/ota/apps")).status, 401);
-  console.log("workerd + D1 + R2: signatures, patches, compression, multi-app isolation, rollback and admin routing passed.");
+  console.log("workerd + D1 + R2: encrypted signing, managed tokens, signatures, patches, compression, multi-app isolation, rollback and admin routing passed.");
   if (process.argv.includes("--serve")) {
     console.log(`Disposable dashboard: ${await worker.ready}admin (token: local-admin-only)`);
     await new Promise<void>(resolve => {
