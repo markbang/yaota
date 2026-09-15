@@ -500,12 +500,17 @@ const worker = {
           return withCors(
             json({ error: "R2 binding ASSETS_R2 is required" }, 501),
           );
-        await env.ASSETS_R2.put(decodeURIComponent(upload[1]), await request.arrayBuffer(), {
+        const key = decodeURIComponent(upload[1]);
+        const filename = key.startsWith("apk/") ? key.slice(4) : "";
+        if (!APK_FILE.test(filename) || !request.body)
+          return withCors(json({ error: "Invalid APK upload" }, 400));
+        // Stream into R2. Buffering the APK (~60MB) as an ArrayBuffer exceeds Worker memory.
+        await env.ASSETS_R2.put(key, request.body, {
           httpMetadata: {
             contentType: "application/vnd.android.package-archive",
           },
         });
-        return withCors(json({ ok: true, key: decodeURIComponent(upload[1]) }));
+        return withCors(json({ ok: true, key }));
       }
       if (url.pathname.startsWith("/apk/") && request.method === "GET") {
         const filename = decodeURIComponent(url.pathname.slice("/apk/".length));
