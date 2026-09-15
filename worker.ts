@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { ota } from "./src/ota.ts";
 import type { Env, ReleaseRow, JsonObject } from "./src/types.ts";
 import { appId, requireApp } from "./src/ota-apps.ts";
+import { authorized as tokenMatch } from "./src/ota-protocol.ts";
+import { managedPublisher, publishingSettings } from "./src/ota-credentials.ts";
 
 interface LegacyRelease {
   id: string; version: string; channel: string; platform: string; runtimeVersion: string;
@@ -75,11 +77,17 @@ const withCors = (response: Response) => {
   return new Response(response.body, { status: response.status, headers });
 };
 
-function authorized(request: Request, env: Env) {
+async function authorized(request: Request, env: Env) {
   const admin = env.YAOTA_ADMIN_TOKEN;
-  if (admin && request.headers.get("authorization") === `Bearer ${admin}`) return true;
+  if (tokenMatch(request.headers.get("authorization") ?? undefined, admin ? `Bearer ${admin}` : undefined)) return true;
   const apiKey = request.headers.get("x-ota-api-key");
-  if (apiKey && env.OTA_API_KEY && apiKey === env.OTA_API_KEY) return true;
+  if (apiKey && apiKey.length <= 1024 && env.DB) {
+    const settings = await publishingSettings(env);
+    if (settings.legacy_enabled && tokenMatch(apiKey, env.OTA_API_KEY)) return true;
+    if (await managedPublisher(env, apiKey)) return true;
+  } else if (apiKey && tokenMatch(apiKey, env.OTA_API_KEY)) {
+    return true;
+  }
   // Seeded local mode is intentionally open; configured storage requires a secret.
   if (!admin) return !env.DB && !env.ASSETS_R2;
   return false;
@@ -356,11 +364,11 @@ const worker = {
       if (url.pathname === "/api/updates" || url.pathname === "/api/manifest")
         return withCors(await expoManifest(request, env, url));
       if (url.pathname === "/api/releases" && request.method === "GET") {
-        if (!authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
+        if (!await authorized(request, env)) return withCors(json({ error: "Unauthorized" }, 401));
         return withCors(json({ releases: await listReleases(env, request.headers.get("expo-app-id") || url.searchParams.get("app_id") || undefined) }, 200, { "cache-control": "private, no-store" }));
       }
       if (url.pathname === "/api/releases" && request.method === "POST") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         return withCors(
           json(
@@ -373,7 +381,7 @@ const worker = {
         /^\/api\/releases\/([^/]+)\/(promote|rollback)$/,
       );
       if (releaseAction && ["POST", "PATCH"].includes(request.method)) {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         const release = await updateRelease(
           env,
@@ -389,7 +397,7 @@ const worker = {
       }
       const releasePatch = url.pathname.match(/^\/api\/releases\/([^/]+)$/);
       if (releasePatch && request.method === "PATCH") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         const release = await patchRelease(
           env,
@@ -406,7 +414,7 @@ const worker = {
       if (url.pathname === "/api/apks" && request.method === "GET")
         return withCors(json({ apks: await listApks(env, url.origin) }));
       if (url.pathname === "/api/apks/presign" && request.method === "POST") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         const body = await request.json();
         const version = String(body.version || "").trim();
@@ -440,7 +448,7 @@ const worker = {
         /^\/api\/updates\/([^/]+)\/presign$/,
       );
       if (updatePresign && request.method === "POST") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         const body = await request.json();
         const key = String(body.key || "index.js").replace(/^\/+/, "");
@@ -477,7 +485,7 @@ const worker = {
         /^\/api\/updates\/assets\/([^/]+)\/upload\/(.+)$/,
       );
       if (updateUpload && request.method === "PUT") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         if (!env.ASSETS_R2)
           return withCors(
@@ -494,7 +502,7 @@ const worker = {
       }
       const upload = url.pathname.match(/^\/api\/apks\/upload\/(.+)$/);
       if (upload && request.method === "PUT") {
-        if (!authorized(request, env))
+        if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));
         if (!env.ASSETS_R2)
           return withCors(
