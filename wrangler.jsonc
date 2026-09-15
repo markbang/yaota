@@ -4,6 +4,19 @@
   "main": "./worker.ts",
   "compatibility_date": "2025-08-03",
   "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "logs": {
+      "enabled": false,
+      "head_sampling_rate": 0.01,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": false,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
