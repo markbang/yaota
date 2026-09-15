@@ -1,6 +1,6 @@
 # Mobile CI Integration
 
-The existing `markbang/cohub-mobile` workflow still uses its old publisher and `expo-ota.talesofai.com`. Its original secret and variables have not been changed. Do not redirect that hostname just because the new Worker is deployed: installed native apps still use it, and the new service has not imported old OTA history.
+The existing `markbang/cohub-mobile` workflow still uses its old publisher and update endpoint. Its original secret and variables have not been changed. Do not redirect that endpoint just because the new Worker is deployed: installed native apps still use it, and the new service has not imported old OTA history.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ This is a template for the Android job after the existing Expo export, not a wor
 - name: Publish staged Yaota canary
   uses: markbang/yaota/.github/actions/publish-ota@YAOTA_COMMIT
   with:
-    server: https://mobile.talesofai.com
+    server: https://ota.example.com
     api-key: ${{ secrets.YAOTA_OTA_API_KEY }}
     app-id: cohub-mobile
     export-dir: ${{ runner.temp }}/cohub-ota-export

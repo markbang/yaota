@@ -2,11 +2,11 @@
 
 Self-hosted Expo OTA updates on Cloudflare Workers, with signed releases, multi-app channels, binary diffs, and a HeroUI dashboard.
 
-[Admin console](https://mobile.talesofai.com/admin) | [Configuration & protocol](docs/cohub-ota.md) | [Mobile CI integration](docs/mobile-ci-integration.md)
+[Local demo](#try-it-locally) | [Configuration & protocol](docs/cohub-ota.md) | [Mobile CI integration](docs/mobile-ci-integration.md)
 
 ![Yaota dashboard showing staged and live Expo updates, platform filters, and a gradual rollout](docs/assets/dashboard.png)
 
-*The real dashboard with local sample data. The hosted console requires an admin token.*
+*The real dashboard with local sample data. Each deployment requires its own admin token.*
 
 ## What You Get
 
@@ -42,7 +42,7 @@ Open the `/admin` URL printed in the terminal and sign in with the test-only tok
 Run from this repository, with `OTA_API_KEY` supplied through your environment or CI secret:
 
 ```bash
-export OTA_SERVER="https://mobile.talesofai.com"
+export OTA_SERVER="https://ota.example.com"
 
 node scripts/publish.ts \
   --app-id your-app \
@@ -74,15 +74,7 @@ See [Mobile CI integration](docs/mobile-ci-integration.md) for the reusable acti
 
 Single-key installations can use `CODE_SIGNING_PRIVATE_KEY` instead of `CODE_SIGNING_APPS`. Once per-app signing is configured, unknown apps do not fall back to a global key. Keep private keys and tokens in Worker secrets, never in the repository or Expo public config.
 
-The current installation uses:
-
-| Service | Address |
-| --- | --- |
-| Admin console | <https://mobile.talesofai.com/admin> |
-| Expo manifest endpoint | <https://mobile.talesofai.com/manifest> |
-| Public R2 domain | <https://r2-mobile.talesofai.com> |
-
-These addresses belong to this installation. For a separate deployment, configure your own bindings, database ID, and custom domain in [`wrangler.jsonc`](wrangler.jsonc).
+Configure your own bindings, database ID, and custom domain in [`wrangler.jsonc`](wrangler.jsonc). The dashboard is served at `/admin` and the Expo manifest endpoint at `/manifest`. Domains under `example.com` in this documentation are placeholders, not hosted services.
 
 ## Development
 
@@ -139,7 +131,7 @@ Admin requests use a bearer token. Publisher requests use `x-ota-api-key`. Appli
 - Validate on Android and iOS with the certificate actually trusted by your native builds. Local tests do not replace real-device acceptance.
 - Existing apps retain their compiled-in updates URL and trusted certificate. Deploying Yaota does not migrate installed apps, import update history, or connect their CI workflow.
 - The publishing credential is operator-wide. App isolation is not a per-tenant authentication system.
-- R2 is intentionally public in this installation. Signatures provide authenticity, not secrecy; direct object URLs bypass Worker asset-header checks. Never put secrets in update artifacts.
+- If you expose R2 publicly, direct object URLs bypass Worker asset-header checks. Signatures provide authenticity, not secrecy. Never put secrets in update artifacts.
 - Failed-update reports are client reports, not a measured crash rate. Shared blobs have no automatic garbage collection yet; deleting one release must not delete content used by another.
 
 More detail: [protocol, signing, and migration guide](docs/cohub-ota.md) | [mobile rollout checklist](docs/mobile-ci-integration.md).

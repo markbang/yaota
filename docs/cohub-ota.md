@@ -6,7 +6,7 @@ APK distribution is outside this integration.
 
 ## Deployment
 
-The hosted `mobile.talesofai.com` Worker is connected to this GitHub repository through
+The Worker is connected to this GitHub repository through
 Cloudflare Workers Builds. Push to `main` for normal deployments; do not also run a
 local deploy for the same change. The connected build must run the Vite build before
 Wrangler deploys. Secret configuration and database migrations remain separate,
@@ -33,7 +33,7 @@ For per-app signing use `CODE_SIGNING_APPS`, a JSON map of app IDs to key-ID map
 Never replace the client's trusted certificate to make a server test pass.
 Local development may use .dev.vars (gitignored); production uses wrangler secret put.
 Existing clients retain their native updates URL. To serve them, deploy behind the
-existing expo-ota.talesofai.com/manifest endpoint. Changing only a repository variable
+existing manifest endpoint configured in the native app. Changing only a repository variable
 does not change URLs embedded in installed binaries. Existing OTA history is not
 automatically imported from the old service.
 
@@ -66,7 +66,7 @@ bundle hash so the native client validates the reconstructed bytes.
 Generate a patch after uploading two compatible releases:
 
 ```bash
-OTA_SERVER=https://mobile.talesofai.com \
+OTA_SERVER=https://ota.example.com \
   node scripts/publish-delta.ts BASE_UPDATE_UUID TARGET_UPDATE_UUID cohub-mobile
 ```
 
@@ -94,7 +94,7 @@ Response negotiation supports JSON and multipart, signature key selection and op
 
 Per-asset `extensions.assetRequestHeaders` are enforced before serving content. Normal public resources use immutable caching; launch bundles, private resources and patches use no-store. Gzip/Brotli variants are cached in R2 by content hash. Shared blobs and encoded variants must not be deleted just because one release is removed.
 
-This deployment intentionally exposes R2 through public custom domains. Direct object URLs bypass Worker request-header checks. Assets, bundles and patches are public distribution artifacts, not confidential storage. Signatures and hashes provide authenticity/integrity, not secrecy. Manifests keep Worker asset URLs so SDK 57 delta negotiation continues to work.
+If a deployment exposes R2 through public custom domains, direct object URLs bypass Worker request-header checks. Assets, bundles and patches are distribution artifacts, not confidential storage. Signatures and hashes provide authenticity/integrity, not secrecy. Manifests keep Worker asset URLs so SDK 57 delta negotiation continues to work.
 
 Run `npm run typecheck`, `npm test`, `npm run test:workerd`, and `npx wrangler deploy --dry-run` before deployment.
 
