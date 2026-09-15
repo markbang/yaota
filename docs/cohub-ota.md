@@ -6,6 +6,12 @@ APK distribution is outside this integration.
 
 ## Deployment
 
+The hosted `mobile.talesofai.com` Worker is connected to this GitHub repository through
+Cloudflare Workers Builds. Push to `main` for normal deployments; do not also run a
+local deploy for the same change. The connected build must run the Vite build before
+Wrangler deploys. Secret configuration and database migrations remain separate,
+explicit operations.
+
 Use Node 24+ for local tests and the TypeScript publisher. Enable nodejs_compat in Wrangler.
 Bind DB to D1 and ASSETS_R2 to R2. For a fresh database execute schema.sql.
 For a database initialized with the previous yaota schema, execute
