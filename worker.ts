@@ -11,6 +11,7 @@ interface LegacyRelease {
   status: string; rollout: number; createdAt: string; note: string; launchAssetUrl: string | null; assets: unknown[];
 }
 interface ApkRow { key: string; version: string; size: string; arch: string; sha256?: string; downloads: number; created_at: string; status: string }
+interface ApkReleaseRow { version: string; title: string | null; notes: string | null; release_url: string | null; published_at: string; status: string }
 
 const APK_ABI = /^(arm64-v8a|armeabi-v7a|x86|x86_64)$/;
 const APK_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -412,6 +413,12 @@ const worker = {
             : json({ error: "Release not found" }, 404),
         );
       }
+      if (url.pathname === "/api/apk-releases" && request.method === "GET") {
+        if (!env.DB) return withCors(json({ releases: [] }));
+        await ensureApkSchema(env);
+        const { results } = await env.DB.prepare("SELECT * FROM apk_releases WHERE status='Available' ORDER BY published_at DESC").all<ApkReleaseRow>();
+        return withCors(json({ releases: results.map(row => ({ version: row.version, title: row.title, notes: row.notes, releaseUrl: row.release_url, publishedAt: row.published_at })) }));
+      }
       if (url.pathname === "/api/apks" && request.method === "GET")
         return withCors(json({ apks: await listApks(env, url.origin) }));
       if (url.pathname === "/api/apks/presign" && request.method === "POST") {
@@ -431,6 +438,8 @@ const worker = {
         const key = apkObjectKey(version, arch);
         if (env.DB) {
           await ensureApkSchema(env);
+          await env.DB.prepare("INSERT OR REPLACE INTO apk_releases (app_id,version,title,notes,release_url,published_at,status) VALUES (?,?,?,?,?,?,?)")
+            .bind("cohub-mobile", version, typeof body.title === "string" ? body.title.trim() || null : null, typeof body.notes === "string" ? body.notes : null, typeof body.releaseUrl === "string" ? body.releaseUrl.trim() || null : null, new Date().toISOString(), "Available").run();
           await env.DB.prepare(
             "INSERT OR REPLACE INTO apks (key,version,size,arch,sha256,downloads,created_at,status,app_id) VALUES (?,?,?,?,?,?,?,?,(SELECT app_id FROM ota_apps WHERE app_id='cohub-mobile'))",
           )
