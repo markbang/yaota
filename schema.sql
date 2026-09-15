@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS apks (
   status TEXT NOT NULL DEFAULT 'Available'
 );
 CREATE INDEX IF NOT EXISTS apks_app ON apks(app_id, created_at);
+CREATE TABLE IF NOT EXISTS apk_releases (
+  app_id TEXT NOT NULL, version TEXT NOT NULL, title TEXT, notes TEXT, release_url TEXT,
+  published_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Available',
+  PRIMARY KEY(app_id, version)
+);
 CREATE TABLE IF NOT EXISTS ota_patches (
   base_hash TEXT NOT NULL, target_hash TEXT NOT NULL, size INTEGER NOT NULL CHECK(size > 0),
   PRIMARY KEY(base_hash, target_hash)
