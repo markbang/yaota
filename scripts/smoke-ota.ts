@@ -116,6 +116,25 @@ try {
   assert.equal((await manage("credentials/publishing/legacy?app_id=cohub-mobile", { enabled: true, confirm: true, revision: 3 }, "PUT")).status, 200);
   assert.equal((await manage("apps", { app_id: "second-app" })).status, 201);
   assert.equal((await manage("channels/production?app_id=second-app", { branch: "second-stable", revision: -1 }, "PUT")).status, 200);
+  const artifactState = await (await worker.dispatchFetch("https://ota.local/api/ota/state?app_id=cohub-mobile", { headers: { authorization: "Bearer local-admin-only" } })).json() as { releases: { id: string; delivery: { bundleBytes: number; patches: { bytes: number }[] } }[]; channels: { implicit: boolean }[] };
+  const delivery = artifactState.releases.find(release => release.id === target.id)!.delivery;
+  assert.equal(delivery.bundleBytes, newBytes.length);
+  assert.equal(delivery.patches[0]!.bytes, patch.byteLength);
+  assert.equal(artifactState.channels[0]!.implicit, true);
+  const apkForm = new FormData();
+  apkForm.set("version", "1.0.0-smoke"); apkForm.set("arch", "arm64-v8a");
+  apkForm.set("file", new File([new Uint8Array([80, 75, 3, 4, 1, 2, 3, 4])], "smoke.apk"));
+  const apkRequest = new Request("https://ota.local/api/ota/apks?app_id=cohub-mobile", { method: "POST", headers: { authorization: "Bearer local-admin-only" }, body: apkForm });
+  const apkResponse = await worker.dispatchFetch(apkRequest.url, { method: "POST", headers: Object.fromEntries(apkRequest.headers), body: await apkRequest.arrayBuffer() });
+  assert.equal(apkResponse.status, 201, await apkResponse.clone().text());
+  const { apk } = await apkResponse.json() as { apk: { sizeBytes: number; downloadUrl: string } };
+  assert.equal(apk.sizeBytes, 8);
+  const apkDownload = await worker.dispatchFetch(`https://ota.local${apk.downloadUrl}`);
+  assert.equal(apkDownload.status, 200);
+  assert.equal((await apkDownload.arrayBuffer()).byteLength, 8);
+  const reservation = await worker.dispatchFetch("https://ota.local/api/ota/apks/presign?app_id=cohub-mobile", { method: "POST", headers: { authorization: "Bearer local-admin-only", "content-type": "application/json" }, body: JSON.stringify({ version: "two-step-smoke", arch: "universal" }) });
+  const { uploadUrl } = await reservation.json() as { uploadUrl: string };
+  assert.equal((await worker.dispatchFetch(uploadUrl, { method: "PUT", headers: { authorization: "Bearer local-admin-only" }, body: new Uint8Array([80, 75, 3, 4, 5]) })).status, 200);
   for (const appId of ["cohub-mobile", "second-app", "cohub-mobile", "second-app"]) {
     const state = await worker.dispatchFetch(`https://ota.local/api/ota/state?app_id=${appId}`, { headers: { authorization: "Bearer local-admin-only" } });
     const data = await state.json() as { appId: string; releases: { appId: string }[] };
@@ -130,7 +149,7 @@ try {
   assert.equal(adminPage.status, 200);
   assert.match(await adminPage.text(), /lang="en"/);
   assert.equal((await worker.dispatchFetch("https://ota.local/api/ota/apps")).status, 401);
-  console.log("workerd + D1 + R2: encrypted signing, managed tokens, signatures, patches, compression, multi-app isolation, rollback and admin routing passed.");
+  console.log("workerd + D1 + R2: encrypted signing, managed tokens, signatures, patch metrics, APK uploads, implicit channels, compression, multi-app isolation, rollback and admin routing passed.");
   if (process.argv.includes("--serve")) {
     console.log(`Disposable dashboard: ${await worker.ready}admin (token: local-admin-only)`);
     await new Promise<void>(resolve => {

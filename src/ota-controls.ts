@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { credentialsState } from "./ota-credentials.ts";
+import { listAppApks, releasesWithDelivery, visibleChannels } from "./ota-artifacts.ts";
 import { admin, publisher, fail, object, strings, text, signingKey } from "./ota-protocol.ts";
 import { appId, requestAppId, requireApp } from "./ota-apps.ts";
 import { assertChanged, branchOf, changes, event, getRelease, percentage, publish, publicRelease } from "./ota-store.ts";
@@ -77,7 +78,7 @@ controls.get("/api/ota/state", async c => {
   const failures = await c.env.DB.prepare("SELECT release_id,COUNT(*) AS clients,MAX(last_seen) AS last_seen FROM ota_failures WHERE app_id=? GROUP BY release_id ORDER BY last_seen DESC").bind(app).all();
   const events = await c.env.DB.prepare("SELECT action,subject,created_at FROM ota_events WHERE app_id=? OR app_id='' ORDER BY id DESC LIMIT 100").bind(app).all();
   const credentials = await credentialsState(c.env, app);
-  return c.json({ appId: app, credentials, configuration: { publishing: credentials.publishing.configured, signing: credentials.signing.configured, signingError: credentials.signing.error }, releases: releases.results.map(publicRelease), channels: channels.results.map(row => ({ ...row, headers: JSON.parse(row.headers_json) })), failures: failures.results, events: events.results });
+  return c.json({ appId: app, credentials, configuration: { publishing: credentials.publishing.configured, signing: credentials.signing.configured, signingError: credentials.signing.error }, releases: await releasesWithDelivery(c.env, app, releases.results), channels: visibleChannels(app, channels.results, releases.results), apks: await listAppApks(c.env, app), failures: failures.results, events: events.results });
 });
 controls.get("/api/ota/apps", async c => {
   const { results } = await c.env.DB.prepare("SELECT app_id,created_at FROM ota_apps ORDER BY app_id").all();

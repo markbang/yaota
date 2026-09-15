@@ -40,6 +40,16 @@ export interface ChannelRow {
   seed: string; headers_json: string; revision: number;
 }
 export interface BlobRow { hash: string; asset_key: string; size: number }
+export interface ReleaseDelivery {
+  bundleBytes: number | null; assetBytes: number | null; totalBytes: number | null;
+  assetCount: number; uniqueAssetCount: number;
+  previousUpdateId: string | null; reusedAssetCount: number; reusedAssetBytes: number | null;
+  patches: { baseId: string; baseVersion: string; baseStatus: string; bytes: number; savingsPercent: number | null }[];
+}
+export interface ApkRow {
+  key: string; app_id: string | null; version: string; arch: string; size: string;
+  size_bytes: number | null; source_url: string | null; created_at: string; status: string; downloads: number; sha256: string;
+}
 export interface Publication {
   appId: string; channel: string; branch: string; platform: string; runtime: string; fingerprint: string | null;
   config: ExpoConfig; targets: StringMap; extensions: Extensions; rollout: number; status: string; id?: string; note: string;

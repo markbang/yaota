@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { ReadableStream as WorkersReadableStream } from "@cloudflare/workers-types";
 import { ota } from "./src/ota.ts";
 import type { Env, ReleaseRow, JsonObject } from "./src/types.ts";
 import { appId, requireApp } from "./src/ota-apps.ts";
@@ -286,7 +287,7 @@ async function listApks(env: Env, origin: string) {
   }
   await ensureApkSchema(env);
   const { results } = await env.DB.prepare(
-    "SELECT * FROM apks ORDER BY created_at DESC",
+    "SELECT * FROM apks WHERE key LIKE 'apk/cohub-v%-android-%.apk' AND (app_id IS NULL OR app_id='cohub-mobile') ORDER BY created_at DESC",
   ).all<ApkRow>();
   return results.map((row) => apkRecord(row, origin));
 }
@@ -431,7 +432,7 @@ const worker = {
         if (env.DB) {
           await ensureApkSchema(env);
           await env.DB.prepare(
-            "INSERT OR REPLACE INTO apks (key,version,size,arch,sha256,downloads,created_at,status) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO apks (key,version,size,arch,sha256,downloads,created_at,status,app_id) VALUES (?,?,?,?,?,?,?,?,(SELECT app_id FROM ota_apps WHERE app_id='cohub-mobile'))",
           )
             .bind(key, version, String(size), arch, sha256, 0, new Date().toISOString(), "Available")
             .run();
@@ -513,11 +514,12 @@ const worker = {
         if (!APK_FILE.test(filename) || !request.body)
           return withCors(json({ error: "Invalid APK upload" }, 400));
         // Stream into R2. Buffering the APK (~60MB) as an ArrayBuffer exceeds Worker memory.
-        await env.ASSETS_R2.put(key, request.body, {
+        const stored = await env.ASSETS_R2.put(key, request.body as unknown as WorkersReadableStream, {
           httpMetadata: {
             contentType: "application/vnd.android.package-archive",
           },
         });
+        if (stored && env.DB) await env.DB.prepare("UPDATE apks SET size_bytes=?,app_id=(SELECT app_id FROM ota_apps WHERE app_id='cohub-mobile') WHERE key=?").bind(stored.size, key).run();
         return withCors(json({ ok: true, key }));
       }
       if (url.pathname.startsWith("/apk/") && request.method === "GET") {
@@ -536,6 +538,7 @@ const worker = {
         headers.set("content-type", object.httpMetadata?.contentType || "application/vnd.android.package-archive");
         headers.set("etag", object.httpEtag);
         headers.set("content-disposition", `attachment; filename="${filename}"`);
+        headers.set("content-length", String(object.size));
         headers.set("cache-control", "public, max-age=31536000, immutable");
         return new Response(object.body as unknown as ReadableStream, { headers });
       }

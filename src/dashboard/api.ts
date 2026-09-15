@@ -1,14 +1,17 @@
 import type { publicRelease } from "../ota-store.ts";
-import type { ChannelRow, StringMap } from "../types.ts";
+import type { ChannelRow, ReleaseDelivery, StringMap } from "../types.ts";
+import type { listAppApks } from "../ota-artifacts.ts";
 import type { CredentialsState } from "../ota-credentials.ts";
 
-export type Release = ReturnType<typeof publicRelease>;
-export type Channel = ChannelRow & { headers: StringMap };
+export type Release = ReturnType<typeof publicRelease> & { delivery?: ReleaseDelivery | null };
+export type Channel = ChannelRow & { headers: StringMap; implicit?: boolean };
+export type Apk = Awaited<ReturnType<typeof listAppApks>>[number];
 export interface AppEntry { app_id: string; created_at: string }
 export interface DashboardState {
   appId: string;
   releases: Release[];
   channels: Channel[];
+  apks: Apk[];
   configuration?: { publishing: boolean; signing: boolean; signingError: string | null };
   credentials: CredentialsState;
   failures: { release_id: string; clients: number; last_seen: string }[];

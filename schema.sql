@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS ota_fingerprints (
 
 CREATE TABLE IF NOT EXISTS apks (
   key TEXT PRIMARY KEY,
+  app_id TEXT,
+  size_bytes INTEGER,
+  source_url TEXT,
   version TEXT NOT NULL,
   size TEXT NOT NULL DEFAULT '',
   arch TEXT NOT NULL DEFAULT 'arm64-v8a',
@@ -45,6 +48,12 @@ CREATE TABLE IF NOT EXISTS apks (
   created_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'Available'
 );
+CREATE INDEX IF NOT EXISTS apks_app ON apks(app_id, created_at);
+CREATE TABLE IF NOT EXISTS ota_patches (
+  base_hash TEXT NOT NULL, target_hash TEXT NOT NULL, size INTEGER NOT NULL CHECK(size > 0),
+  PRIMARY KEY(base_hash, target_hash)
+);
+CREATE INDEX IF NOT EXISTS ota_patches_target ON ota_patches(target_hash);
 
 CREATE TABLE IF NOT EXISTS ota_channels (
   app_id TEXT NOT NULL, name TEXT NOT NULL, branch TEXT NOT NULL,

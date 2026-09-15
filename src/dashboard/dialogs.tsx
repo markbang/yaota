@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { api, ApiError, appPath, errorMessage } from "./api.ts";
 import type { Channel, Release } from "./api.ts";
 import { exportUpload } from "./export-upload.ts";
+import { DeliveryDetails } from "./delivery.tsx";
 import { Choice, CopyButton, Field, Percentage, Status, formatDate } from "./ui.tsx";
 
 export interface Callbacks { onClose: () => void; onDone: (appId?: string) => Promise<void>; onUnauthorized: () => void }
@@ -98,6 +99,7 @@ export function ReleaseDialog({ release, onClose, onDone, onUnauthorized }: Call
     <div className="release-detail"><div className="detail-title"><strong>{release.directive ? "Embedded rollback" : release.version || "Update"}</strong><Status status={release.status} /></div>
       <div className="copy-value"><code>{release.id}</code><CopyButton value={release.id} label="Copy update ID" /></div>
       <dl className="detail-grid"><div><dt>Branch</dt><dd>{release.branch}</dd></div><div><dt>Platform</dt><dd>{release.platform}</dd></div><div><dt>Runtime</dt><dd><code>{release.runtimeVersion}</code></dd></div><div><dt>Created</dt><dd>{formatDate(release.createdAt)}</dd></div><div><dt>Rollout</dt><dd>{release.rollout}%</dd></div><div><dt>Assets</dt><dd>{release.manifest ? release.manifest.assets.length : "None"}</dd></div></dl>
+      <DeliveryDetails release={release} />
       {release.note && <p className="release-note">{release.note}</p>}
       {Object.keys(release.targets).length > 0 && <details><summary>Target parameters</summary><pre>{JSON.stringify(release.targets, null, 2)}</pre></details>}
     </div>

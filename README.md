@@ -15,6 +15,7 @@ Self-hosted Expo OTA updates on Cloudflare Workers, with signed releases, multi-
 - **Signed distribution.** Immutable update identities, RSA signatures, asset integrity hashes, per-app signing keys, and native fingerprint checks.
 - **Smaller transfers.** Content-addressed R2 storage deduplicates bundles and resources. The TypeScript publisher uploads only missing blobs and generates verified BSDIFF40 patches for SDK 57, with full-bundle fallback.
 - **An operational dashboard.** English-first React 19 + HeroUI v3 views, with per-app signing-key imports, rotation and revocation, plus one-time publishing tokens.
+- **Artifact visibility.** App-scoped APK uploads and GitHub Release imports, bundle/resource byte sizes, reusable assets and per-base binary patch savings. See [APKs and OTA sizes](docs/artifacts.md).
 - **CI-ready publishing.** A TypeScript publisher and reusable GitHub Action, plus compatibility with the existing multipart upload contract.
 
 The Worker uses [Hono](https://hono.dev/docs/getting-started/cloudflare-workers-vite) and the official Cloudflare Workers Vite plugin. D1 holds application and release state; R2 holds content-addressed distribution artifacts.
@@ -127,6 +128,8 @@ Worker secrets, D1/R2 bindings, and custom domains remain configured in Cloudfla
 | `PUT /api/ota/channels/CHANNEL?app_id=APP` | Admin | Channel mapping and branch rollouts |
 | `POST /api/ota/releases/ID/ACTION?app_id=APP` | Admin | Release distribution controls |
 | `POST /api/ota/upload` | Admin | Expo export upload |
+| `GET /api/ota/apks`, `POST /api/ota/apks` | Admin | List or upload app-scoped APKs |
+| `POST /api/ota/apks/github?app_id=APP` | Admin | Import public GitHub Release APK metadata |
 | `POST /upload` | Publisher | Legacy-compatible multipart upload |
 | `/ota-publish/*`, `/ota-patches/*` | Publisher | Deduplicated publishing and verified patches |
 

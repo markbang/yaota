@@ -2,7 +2,8 @@
 
 Compatibility target: cohub-mobile commit 54a24a3b352c5051a4245eba7626343b560f0f3e,
 with publisher CLI revision fab754606dfe747abee8faef24d84981789f8064.
-APK distribution is outside this integration.
+Native build automation is outside this integration. APK registration, uploads and
+size reporting are covered in [APKs and OTA sizes](artifacts.md).
 
 ## Deployment
 
@@ -15,7 +16,7 @@ explicit operations.
 Use Node 24+ for local tests and the TypeScript publisher. Enable nodejs_compat in Wrangler.
 Bind DB to D1 and ASSETS_R2 to R2. For a fresh database execute schema.sql.
 For a database initialized with the previous yaota schema, execute
-migrations/0001_cohub_ota.sql, migrations/0002_ota_controls.sql, migrations/0003_app_registry.sql, then migrations/0004_credentials.sql. Apply only migrations missing from your installation. Migration 0003 is idempotent and backfills applications referenced by existing Yaota data; migration 0004 adds managed credential tables without changing existing secrets. Fresh schema installations need no migrations.
+migrations/0001_cohub_ota.sql, migrations/0002_ota_controls.sql, migrations/0003_app_registry.sql, migrations/0004_credentials.sql, migrations/0005_apk_distribution.sql, then migrations/0006_artifact_metrics.sql. Apply only migrations missing from your installation. Migration 0003 is idempotent and backfills applications referenced by existing Yaota data; migration 0004 adds managed credential tables without changing existing secrets. Migration 0005 adds APK SHA-256 metadata. Migration 0006 adds APK ownership/size fields and the patch size index. Fresh schema installations need no migrations.
 
 There is no default application. Create apps in `/admin` before publishing. Configure Worker secrets:
 

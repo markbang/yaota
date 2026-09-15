@@ -38,12 +38,16 @@ function fixture() {
       return bound([]);
     } },
     ASSETS_R2: {
-      async head(key) { const object = objects.get(key); return object && { size: object.bytes.byteLength }; },
-      async put(key, bytes, options) { objects.set(key, { bytes, options }); },
+      async head(key) { const object = objects.get(key); return object && { size: object.bytes.byteLength, customMetadata: object.options?.customMetadata }; },
+      async put(key, bytes, options) {
+        if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
+        if (bytes instanceof ReadableStream) bytes = await new Response(bytes).arrayBuffer();
+        objects.set(key, { bytes, options }); return { size: bytes.byteLength };
+      },
       async delete(key) { objects.delete(key); },
       async get(key) {
         const object = objects.get(key);
-        return object && { body: object.bytes, httpEtag: '"test"', writeHttpMetadata(headers) {
+        return object && { body: object.bytes, size: object.bytes.byteLength, httpEtag: '"test"', writeHttpMetadata(headers) {
           headers.set("content-type", object.options.httpMetadata.contentType);
         } };
       },
@@ -109,6 +113,171 @@ test("pinned CLI multipart contract publishes signed manifest and byte-exact ass
 const manage = (env, path, data = {}, method = "POST") => app.request(`/api/ota/${path}${path.includes("?") || path === "apps" ? "" : "?app_id=cohub-mobile"}`, {
   method, headers: { authorization: "Bearer admin-secret", "content-type": "application/json" }, body: JSON.stringify(data),
 }, env);
+
+async function dashboardState(env, appId = "cohub-mobile") {
+  const response = await app.request(`/api/ota/state?app_id=${appId}`, { headers: { authorization: "Bearer admin-secret" } }, env);
+  assert.equal(response.status, 200, await response.clone().text());
+  return response.json();
+}
+
+test("implicit channels reflect fallback routes and become revision-guarded explicit mappings", async () => {
+  const f = fixture();
+  try {
+    await upload(f.env);
+    await upload(f.env, { channel: "beta", branch: "candidate" });
+    const before = await dashboardState(f.env);
+    assert.deepEqual(before.channels.map(channel => [channel.name, channel.branch, channel.implicit, channel.revision]), [
+      ["beta", "beta", true, -1], ["candidate", "candidate", true, -1], ["production", "production", true, -1],
+    ]);
+    assert.equal(f.sql.prepare("SELECT count(*) AS n FROM ota_channels").get().n, 0);
+    assert.equal((await manage(f.env, "channels/production", { branch: "production", revision: -1 }, "PUT")).status, 200);
+    const after = await dashboardState(f.env);
+    assert.equal(after.channels.find(channel => channel.name === "production").implicit, false);
+    assert.equal((await manage(f.env, "channels/production", { branch: "other", revision: -1 }, "PUT")).status, 409);
+    await manage(f.env, "apps", { app_id: "other" });
+    assert.deepEqual((await dashboardState(f.env, "other")).channels, []);
+  } finally { f.sql.close(); }
+});
+
+test("dashboard reports byte sizes, reusable resources and scoped patch baselines without changing signed manifests", async () => {
+  const f = fixture();
+  try {
+    const oldBytes = Buffer.from("abcdef".repeat(3000));
+    const newBytes = Buffer.from("abcdef".repeat(2999) + "change");
+    const base = await (await upload(f.env, { bundleBytes: oldBytes })).json();
+    const target = await (await upload(f.env, { bundleBytes: newBytes })).json();
+    const original = f.sql.prepare("SELECT manifest_json FROM releases WHERE id=?").get(target.id).manifest_json;
+    const patch = await createVerifiedPatch(oldBytes, newBytes);
+    assert.equal((await app.request(`/ota-patches/${base.id}/${target.id}`, { method: "PUT", headers: { "x-ota-api-key": "publish-secret", "expo-app-id": "cohub-mobile" }, body: patch }, f.env)).status, 200);
+    const state = await dashboardState(f.env);
+    const delivery = state.releases.find(row => row.id === target.id).delivery;
+    assert.equal(delivery.bundleBytes, newBytes.length);
+    assert.equal(delivery.assetBytes, Buffer.byteLength("image-fixture"));
+    assert.equal(delivery.totalBytes, newBytes.length + delivery.assetBytes);
+    assert.equal(delivery.reusedAssetCount, 1);
+    assert.equal(delivery.reusedAssetBytes, delivery.assetBytes);
+    assert.equal(delivery.previousUpdateId, base.id);
+    assert.deepEqual(delivery.patches.map(p => [p.baseId, p.bytes]), [[base.id, patch.byteLength]]);
+    assert.equal(delivery.patches[0].savingsPercent, Math.round((1 - patch.byteLength / newBytes.length) * 1000) / 10);
+    assert.equal(f.sql.prepare("SELECT manifest_json FROM releases WHERE id=?").get(target.id).manifest_json, original);
+    await manage(f.env, "apps", { app_id: "other" });
+    await upload(f.env, { bundleBytes: newBytes, expoConfig: JSON.stringify({ updates: { requestHeaders: { "expo-app-id": "other" } } }) });
+    assert.deepEqual((await dashboardState(f.env, "other")).releases[0].delivery.patches, []);
+    const hash = JSON.parse(original).launchAsset.hash;
+    f.sql.prepare("DELETE FROM ota_blobs WHERE hash=?").run(hash);
+    const missing = (await dashboardState(f.env)).releases.find(row => row.id === target.id).delivery;
+    assert.equal(missing.bundleBytes, null);
+    assert.equal(missing.totalBytes, null);
+    assert.equal(missing.patches[0].savingsPercent, null);
+  } finally { f.sql.close(); }
+});
+
+test("APK uploads measure bytes, keep apps and architectures separate, and require authorization", async () => {
+  const f = fixture();
+  try {
+    await manage(f.env, "apps", { app_id: "other" });
+    const apkBytes = Buffer.from([80, 75, 3, 4, 1, 2, 3, 4]);
+    function apkForm(appId = "cohub-mobile", arch = "arm64-v8a") {
+      const form = new FormData();
+      for (const [key, value] of Object.entries({ app_id: appId, version: "2.2.11", arch, size: "999 MB" })) form.set(key, value);
+      form.set("file", new File([apkBytes], "test.apk"));
+      return form;
+    }
+    assert.equal((await app.request("/api/ota/apks", { method: "POST", body: apkForm() }, f.env)).status, 401);
+    for (const appId of ["cohub-mobile", "other"]) {
+      for (const arch of ["arm64-v8a", "x86_64"]) {
+        const response = await app.request("/api/ota/apks", { method: "POST", headers: { authorization: "Bearer admin-secret" }, body: apkForm(appId, arch) }, f.env);
+        assert.equal(response.status, 201, await response.clone().text());
+        const { apk } = await response.json();
+        assert.equal(apk.sizeBytes, apkBytes.length);
+        assert.equal(apk.appId, appId);
+        const downloaded = await app.request(apk.downloadUrl, {}, f.env);
+        assert.equal(downloaded.headers.get("content-length"), String(apkBytes.length));
+        assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), apkBytes);
+      }
+    }
+    assert.equal(f.objects.size, 4);
+    const listed = await dashboardState(f.env);
+    assert.equal(listed.apks.length, 2);
+    assert.ok(listed.apks.every(apk => apk.appId === "cohub-mobile"));
+    const published = await app.request("/ota-publish/apks", { method: "POST", headers: { "x-ota-api-key": "publish-secret" }, body: apkForm() }, f.env);
+    assert.equal(published.status, 201);
+    assert.equal((await app.request("/api/ota/apks", { headers: { authorization: "Bearer admin-secret" } }, f.env)).status, 400);
+    const conflicting = await app.request("/api/ota/apks?app_id=other", { method: "POST", headers: { authorization: "Bearer admin-secret" }, body: apkForm() }, f.env);
+    assert.equal(conflicting.status, 400);
+    const invalid = apkForm(); invalid.set("file", new File(["not an apk"], "test.apk"));
+    assert.equal((await app.request("/api/ota/apks", { method: "POST", headers: { authorization: "Bearer admin-secret" }, body: invalid }, f.env)).status, 400);
+  } finally { f.sql.close(); }
+});
+
+test("two-step APK uploads stay pending until stored and cannot overwrite other apps or published APKs", async () => {
+  const f = fixture();
+  try {
+    await manage(f.env, "apps", { app_id: "other" });
+    const headers = { authorization: "Bearer admin-secret", "content-type": "application/json" };
+    const reserved = await app.request("/api/ota/apks/presign?app_id=cohub-mobile", { method: "POST", headers, body: JSON.stringify({ version: "1", arch: "universal", size: "100 MB" }) }, f.env);
+    assert.equal(reserved.status, 200);
+    const { uploadUrl } = await reserved.json();
+    assert.equal((await dashboardState(f.env)).apks[0].status, "Pending");
+    assert.equal((await dashboardState(f.env)).apks[0].sizeBytes, null);
+    assert.equal((await (await app.request("/api/apks", {}, f.env)).json()).apks.length, 0);
+    const body = Buffer.from([80, 75, 3, 4, 5]);
+    assert.equal((await app.request(uploadUrl.replace("app_id=cohub-mobile", "app_id=other"), { method: "PUT", headers, body }, f.env)).status, 404);
+    const batch = f.env.DB.batch;
+    f.env.DB.batch = async () => { throw new Error("D1 temporarily unavailable"); };
+    assert.equal((await app.request(uploadUrl, { method: "PUT", headers, body }, f.env)).status, 500);
+    f.env.DB.batch = batch;
+    assert.equal((await app.request(uploadUrl, { method: "PUT", headers, body: Buffer.from([80,75,3,4,6]) }, f.env)).status, 409);
+    assert.equal((await app.request(uploadUrl, { method: "PUT", headers, body }, f.env)).status, 200);
+    assert.equal((await app.request(uploadUrl, { method: "PUT", headers, body }, f.env)).status, 409);
+    assert.equal((await dashboardState(f.env)).apks[0].sizeBytes, body.length);
+    const publicList = await app.request("/api/apks", { headers: { origin: "https://example.com" } }, f.env);
+    assert.equal(publicList.headers.get("access-control-allow-origin"), "*");
+  } finally { f.sql.close(); }
+});
+
+test("GitHub APK import uses release asset sizes, is idempotent and rejects unrelated download origins", async t => {
+  const f = fixture();
+  try {
+    const asset = { id: 123, name: "client-v1-android-arm64-v8a.apk", size: 123456, state: "uploaded", browser_download_url: "https://github.com/example/mobile/releases/download/v1/client.apk", created_at: new Date().toISOString() };
+    t.mock.method(globalThis, "fetch", async (url, options) => {
+      assert.equal(url, "https://api.github.com/repos/example/mobile/releases/tags/v1");
+      assert.equal(options.redirect, "manual", "Workers supports manual, not error, for redirects");
+      return Response.json({ tag_name: "v1", assets: [asset] });
+    });
+    const data = { repository: "example/mobile", tag: "v1" };
+    assert.equal((await app.request("/api/ota/apks/github?app_id=cohub-mobile", { method: "POST", body: JSON.stringify(data) }, f.env)).status, 401);
+    for (let i = 0; i < 2; i++) assert.equal((await manage(f.env, "apks/github", data)).status, 201);
+    const apks = (await dashboardState(f.env)).apks;
+    assert.equal(apks.length, 1);
+    assert.equal(apks[0].sizeBytes, asset.size);
+    assert.equal(apks[0].arch, "arm64-v8a");
+    assert.equal(apks[0].source, "GitHub");
+    assert.equal(f.objects.size, 0);
+    asset.browser_download_url = "https://untrusted.example/package.apk";
+    assert.equal((await manage(f.env, "apks/github", data)).status, 502);
+    assert.equal((await manage(f.env, "apks/github", { repository: "../mobile" })).status, 400);
+    t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 302, headers: { location: "https://untrusted.example" } }));
+    assert.equal((await manage(f.env, "apks/github", data)).status, 502);
+    t.mock.method(globalThis, "fetch", async () => { throw new Error("offline"); });
+    const offline = await manage(f.env, "apks/github", data);
+    assert.equal(offline.status, 502);
+    assert.match(await offline.text(), /Unable to reach GitHub/);
+  } finally { f.sql.close(); }
+});
+
+test("artifact migration preserves legacy APKs without guessing app ownership or numeric sizes", () => {
+  const sql = new DatabaseSync(":memory:");
+  try {
+    sql.exec("CREATE TABLE ota_apps(app_id TEXT PRIMARY KEY); CREATE TABLE apks(key TEXT PRIMARY KEY,version TEXT,size TEXT,arch TEXT,downloads INTEGER,created_at TEXT,status TEXT); INSERT INTO apks VALUES('apk/old.apk','1','48 MB','arm64-v8a',5,'2026-01-01','Available')");
+    sql.exec(readFileSync(new URL("../migrations/0006_artifact_metrics.sql", import.meta.url), "utf8"));
+    const row = sql.prepare("SELECT * FROM apks").get();
+    assert.equal(row.app_id, null);
+    assert.equal(row.size_bytes, null);
+    assert.equal(row.size, "48 MB");
+    assert.equal(row.downloads, 5);
+  } finally { sql.close(); }
+});
 
 const signingPem = keys.privateKey.export({ type: "pkcs8", format: "pem" });
 const signingCertificate = testCertificate(signingPem);

@@ -8,6 +8,7 @@ import { fail, text, object, publisher, admin, authorized, dictionary, failedIds
 import { HASH, UUID, storeBlob, assetDescriptor, publicationInput, publish, publicRelease, branchOf } from "./ota-store.ts";
 import { controls } from "./ota-controls.ts";
 import { credentialControls } from "./ota-credential-controls.ts";
+import { apks } from "./apks.ts";
 import { requestAppId, requireApp } from "./ota-apps.ts";
 import type { Env, OtaContext, ReleaseRow, ChannelRow, BlobRow, Manifest, Extensions, StringMap } from "./types.ts";
 
@@ -20,6 +21,7 @@ ota.onError((error, c) => {
 });
 ota.route("/", controls);
 ota.route("/", credentialControls);
+ota.route("/", apks);
 ota.use("/api/ota/upload", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.use("/upload", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
 ota.post("/api/ota/upload", async c => { admin(c); return multipartUpload(c); });
@@ -199,5 +201,7 @@ ota.put("/ota-patches/:base/:target", async c => {
   if (bytes.length < 32 || bytes.subarray(0, 8).toString() !== "BSDIFF40") fail(400, "Expected BSDIFF40 patch");
   if (!full || bytes.length >= full.size || oldHash === newHash || bytes.readBigUInt64LE(24) !== BigInt(full.size)) fail(400, "Patch size does not match full bundle");
   await c.env.ASSETS_R2.put(`ota/patches/${oldHash}/${newHash}`, bytes, { httpMetadata: { contentType: "application/octet-stream" } });
+  await c.env.DB.prepare("INSERT INTO ota_patches(base_hash,target_hash,size) VALUES(?,?,?) ON CONFLICT(base_hash,target_hash) DO UPDATE SET size=excluded.size")
+    .bind(oldHash, newHash, bytes.length).run();
   return c.json({ base: base.id, target: target.id, size: bytes.length });
 });

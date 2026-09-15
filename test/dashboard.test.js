@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { exportUpload } from "../src/dashboard/export-upload.ts";
 import { api, ApiError, appPath } from "../src/dashboard/api.ts";
+import { formatBytes } from "../src/dashboard/format.ts";
+
+test("file sizes use binary units and never present unknown sizes as zero", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(1024), "1 KiB");
+  assert.equal(formatBytes(1.5 * 1024 * 1024), "1.5 MiB");
+  for (const missing of [null, undefined, NaN, -1]) assert.equal(formatBytes(missing), "Unknown");
+});
 
 function exportForm(appId = "first-app") {
   const data = new FormData();
