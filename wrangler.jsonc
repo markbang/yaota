@@ -10,17 +10,7 @@
     "run_worker_first": true
   },
    "observability": {
-    "logs": {
-      "enabled": false,
-      "head_sampling_rate": 0.01,
-      "invocation_logs": true,
-      "persist": true
-    },
-    "traces": {
-      "enabled": false,
-      "head_sampling_rate": 1,
-      "persist": true
-    }
+    "enabled": false
   },
   "routes": [{ "pattern": "mobile.talesofai.com", "custom_domain": true }],
   "d1_databases": [{
