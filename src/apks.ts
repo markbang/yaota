@@ -11,6 +11,33 @@ import type { ApkRow, Env, OtaContext } from "./types.ts";
 export const apks = new Hono<{ Bindings: Env }>();
 const architectures = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86", "universal"];
 
+function releaseMetadata(form: FormData) {
+  return {
+    title: typeof form.get("title") === "string" ? String(form.get("title")).trim() || null : null,
+    notes: typeof form.get("notes") === "string" ? String(form.get("notes")) : null,
+    releaseUrl: typeof form.get("release_url") === "string" ? String(form.get("release_url")).trim() || null : null,
+  };
+}
+
+async function apkCatalog(c: OtaContext, appId: string) {
+  const apks = await listAppApks(c.env, appId);
+  const metadata = await c.env.DB.prepare("SELECT version,title,notes,release_url,published_at,status FROM apk_releases WHERE app_id=? ORDER BY published_at DESC").bind(appId).all<{ version: string; title: string | null; notes: string | null; release_url: string | null; published_at: string; status: string }>();
+  const byVersion = new Map(metadata.results.filter(row => row.status === "Available").map(row => [row.version, row]));
+  const versions = new Map<string, typeof apks>();
+  for (const apk of apks) versions.set(apk.version, [...(versions.get(apk.version) || []), apk]);
+  return [...versions].map(([version, assets]) => {
+    const row = byVersion.get(version);
+    return {
+      version,
+      title: row?.title ?? null,
+      notes: row?.notes ?? null,
+      releaseUrl: row?.release_url ?? null,
+      publishedAt: row?.published_at ?? assets[0]?.createdAt ?? null,
+      apks: assets.map(asset => ({ ...asset, downloadUrl: asset.downloadUrl.startsWith("http") ? asset.downloadUrl : new URL(asset.downloadUrl, c.req.url).href })),
+    };
+  });
+}
+
 function assertApk(bytes: ArrayBuffer) {
   const header = new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 4));
   if (header[0] !== 80 || header[1] !== 75 || header[2] !== 3 || header[3] !== 4) fail(400, "APK must be a ZIP archive");
@@ -23,15 +50,22 @@ async function uploadApk(c: OtaContext) {
   await requireApp(c.env, appId);
   const version = text(form.get("version"), "version");
   const arch = text(form.get("arch"), "architecture");
+  const metadata = releaseMetadata(form);
   if (!architectures.includes(arch)) fail(400, "Unsupported APK architecture");
   const file = form.get("file");
   if (!(file instanceof File) || !file.name.toLowerCase().endsWith(".apk") || file.size < 4) fail(400, "Select a non-empty APK file");
   assertApk(await file.slice(0, 4).arrayBuffer());
+  const rawSha256 = form.get("sha256");
+  const sha256 = rawSha256 == null ? "" : text(rawSha256, "sha256").toLowerCase();
+  if (sha256 && !/^[a-f0-9]{64}$/.test(sha256)) fail(400, "sha256 must be a 64-character hex digest");
   const key = `apk/${appId}/${crypto.randomUUID()}/${arch}.apk`;
-  await c.env.ASSETS_R2.put(key, file.stream() as unknown as WorkersReadableStream, { httpMetadata: { contentType: "application/vnd.android.package-archive" } });
+  await c.env.ASSETS_R2.put(key, file.stream() as unknown as WorkersReadableStream, { customMetadata: sha256 ? { sha256 } : undefined, httpMetadata: { contentType: "application/vnd.android.package-archive" } });
+  const now = new Date().toISOString();
   await c.env.DB.batch([
-    c.env.DB.prepare("INSERT INTO apks(key,app_id,version,arch,size_bytes,created_at,status) VALUES(?,?,?,?,?,?,?)")
-      .bind(key, appId, version, arch, file.size, new Date().toISOString(), "Available"),
+    c.env.DB.prepare("INSERT INTO apk_releases(app_id,version,title,notes,release_url,published_at,status) VALUES(?,?,?,?,?,?,?) ON CONFLICT(app_id,version) DO UPDATE SET title=excluded.title,notes=excluded.notes,release_url=excluded.release_url,published_at=excluded.published_at,status='Available'")
+      .bind(appId, version, metadata.title, metadata.notes, metadata.releaseUrl, now, "Available"),
+    c.env.DB.prepare("INSERT INTO apks(key,app_id,version,arch,size_bytes,sha256,created_at,status) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(key, appId, version, arch, file.size, sha256, now, "Available"),
     event(c.env, appId, "upload-apk", key),
   ]);
   return c.json({ apk: (await listAppApks(c.env, appId)).find(apk => apk.key === key) }, 201);
@@ -39,6 +73,15 @@ async function uploadApk(c: OtaContext) {
 
 apks.use("/api/ota/apks*", async (c, next) => { admin(c); c.header("Cache-Control", "private, no-store"); return next(); });
 apks.use("/api/ota/apks", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
+apks.get("/api/ota/catalog", async c => {
+  const appId = requestAppId(c);
+  await requireApp(c.env, appId);
+  const response = c.json({ releases: await apkCatalog(c, appId) });
+  response.headers.set("cache-control", "no-store");
+  response.headers.set("access-control-allow-origin", "*");
+  return response;
+});
+
 apks.get("/api/ota/apks", async c => {
   const appId = requestAppId(c);
   await requireApp(c.env, appId);
