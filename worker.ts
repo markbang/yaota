@@ -271,8 +271,9 @@ function apkRecord(row: ApkRow, origin: string) {
   };
 }
 
-async function listApks(env: Env, origin: string) {
+async function listApks(env: Env, origin: string, requestedApp = "cohub-mobile") {
   if (!env.DB) {
+    if (requestedApp !== "cohub-mobile") return [];
     return [
       apkRecord({
         version: "2.3.8",
@@ -287,9 +288,10 @@ async function listApks(env: Env, origin: string) {
     ];
   }
   await ensureApkSchema(env);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(requestedApp)) throw new Error("Invalid app_id");
   const { results } = await env.DB.prepare(
-    "SELECT * FROM apks WHERE key LIKE 'apk/cohub-v%-android-%.apk' AND (app_id IS NULL OR app_id='cohub-mobile') ORDER BY created_at DESC",
-  ).all<ApkRow>();
+    "SELECT * FROM apks WHERE ((app_id=? AND ((?='cohub-mobile' AND key LIKE 'apk/cohub-v%-android-%.apk') OR (?!='cohub-mobile' AND key LIKE 'apk/' || ? || '/%'))) OR (app_id IS NULL AND key LIKE 'apk/cohub-v%-android-%.apk' AND ?='cohub-mobile')) ORDER BY created_at DESC",
+  ).bind(requestedApp, requestedApp, requestedApp, requestedApp, requestedApp).all<ApkRow>();
   return results.map((row) => apkRecord(row, origin));
 }
 
@@ -415,12 +417,14 @@ const worker = {
       }
       if (url.pathname === "/api/apk-releases" && request.method === "GET") {
         if (!env.DB) return withCors(json({ releases: [] }));
+        const requestedApp = url.searchParams.get("app_id") || request.headers.get("expo-app-id") || "cohub-mobile";
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(requestedApp)) return withCors(json({ error: "Invalid app_id" }, 400));
         await ensureApkSchema(env);
-        const { results } = await env.DB.prepare("SELECT * FROM apk_releases WHERE status='Available' ORDER BY published_at DESC").all<ApkReleaseRow>();
+        const { results } = await env.DB.prepare("SELECT * FROM apk_releases WHERE app_id=? AND status='Available' ORDER BY published_at DESC").bind(requestedApp).all<ApkReleaseRow>();
         return withCors(json({ releases: results.map(row => ({ version: row.version, title: row.title, notes: row.notes, releaseUrl: row.release_url, publishedAt: row.published_at })) }));
       }
       if (url.pathname === "/api/apks" && request.method === "GET")
-        return withCors(json({ apks: await listApks(env, url.origin) }));
+        return withCors(json({ apks: await listApks(env, url.origin, url.searchParams.get("app_id") || request.headers.get("expo-app-id") || "cohub-mobile") }));
       if (url.pathname === "/api/apks/presign" && request.method === "POST") {
         if (!await authorized(request, env))
           return withCors(json({ error: "Unauthorized" }, 401));

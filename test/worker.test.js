@@ -136,6 +136,12 @@ test("APK presign stores per-ABI objects and lists a public download URL", async
     assert.equal(apks[0].size, 12);
     assert.equal(apks[0].sha256, "a".repeat(64));
     assert.equal(apks[0].url, body.publicUrl);
+    const otherApp = await app.request("/api/apks?app_id=other-app", {}, env);
+    assert.equal(otherApp.status, 200);
+    assert.deepEqual((await otherApp.json()).apks, []);
+    const otherNotes = await app.request("/api/apk-releases?app_id=other-app", {}, env);
+    assert.equal(otherNotes.status, 200);
+    assert.deepEqual((await otherNotes.json()).releases, []);
   } finally {
     database.close();
   }
