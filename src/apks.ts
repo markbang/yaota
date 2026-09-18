@@ -73,7 +73,7 @@ async function uploadApk(c: OtaContext) {
 
 apks.use("/api/ota/apks*", async (c, next) => { admin(c); c.header("Cache-Control", "private, no-store"); return next(); });
 apks.use("/api/ota/apks", bodyLimit({ maxSize: 100 * 1024 * 1024 }));
-apks.get("/api/ota/catalog", async c => {
+apks.get("/api/apk/catalog", async c => {
   const appId = requestAppId(c);
   await requireApp(c.env, appId);
   const response = c.json({ releases: await apkCatalog(c, appId) });
